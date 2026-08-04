@@ -629,7 +629,7 @@ function importETradeOne(text, filename) {
   const cExp      = findCol(['expiration date', 'expiration', 'expire date']);
   const cVestSt   = findCol(['vest start', 'vest from', 'vesting start date']);
   const cVestMo   = findCol(['vest period', 'vesting term', 'vest term']);
-  const cVestedNow= findCol(['exercisable qty.', 'exercisable qty', 'exercisable', 'sellable qty.', 'sellable qty', 'sellable', 'vested qty.', 'vested qty', 'vested']);
+  const cVestedNow= findCol(['exercisable qty.', 'exercisable qty', 'exercisable', 'vested qty.', 'vested qty', 'sellable qty.', 'sellable qty', 'sellable', 'vested']);
   const cVestDate = findCol(['vest date', 'vesting date']);
   // Per-vest quantity — E*TRADE uses "Vesting Qty." (Options) and "Qty. or Amount" (Restricted)
   const cVestQty  = (() => {
@@ -656,11 +656,12 @@ function importETradeOne(text, filename) {
     }
     return -1;
   })();
-  const cRecType  = findCol(['record type']);
+  const cRecType   = findCol(['record type']);
+  const cEventType = findCol(['event type']);
 
   diag.columns = { number: cNumber, type: cType, grantDate: cGrantDt, shares: cShares, strike: cStrike,
                    fmv: cFMV, expiration: cExp, vestStart: cVestSt, vestPeriod: cVestMo, vested: cVestedNow,
-                   vestDate: cVestDate, vestQty: cVestQty, recordType: cRecType };
+                   vestDate: cVestDate, vestQty: cVestQty, recordType: cRecType, eventType: cEventType };
 
   if (cVestDate >= 0 && cVestQty >= 0) diag.kind = 'Benefit History (per-vest rows)';
   else if (cStrike >= 0 && cExp >= 0)  diag.kind = 'Stock Options';
@@ -742,10 +743,27 @@ function importETradeOne(text, filename) {
       if (v > 0) g.vestMonths = v;
     }
 
-    // Per-row vest event
+    // Per-row vest event — only accept rows where Event Type is a real vest
+    // (skip Releases, Deferrals, Withholding, Cancellations, etc.).
     const vestDate = normDate(cell(r, cVestDate));
     const vestQty  = numOrZero(cell(r, cVestQty));
-    if (vestDate && vestQty > 0) {
+    const evt      = cell(r, cEventType).toLowerCase();
+    const recType  = cell(r, cRecType).toLowerCase();
+    const isVestEvent =
+      (!evt && !recType && vestDate && vestQty > 0)   // headerless per-vest row
+      || evt.includes('vest')                          // "Vest", "Vesting"
+      || (recType.includes('vest') && !evt.includes('release') && !evt.includes('withhold'));
+    const isNonVestEvent =
+      evt.includes('release')
+      || evt.includes('cancel')
+      || evt.includes('withhold')
+      || evt.includes('tax')
+      || evt.includes('defer')
+      || evt.includes('dividend')
+      || evt.includes('exercise')
+      || evt.includes('sale')
+      || evt.includes('transfer');
+    if (vestDate && vestQty > 0 && isVestEvent && !isNonVestEvent) {
       g.vestSchedule.push({ date: vestDate, shares: vestQty });
     }
   }
