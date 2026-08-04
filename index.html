@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Multi-Year Tax Optimizer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <h1>Tax Optimizer <small>multi-year · RSU · ISO · AMT</small></h1>
+    <nav>
+      <div class="nav-section">
+        <div class="label">Inputs</div>
+        <a class="nav-item active" data-page="profile">1 · Profile &amp; Base Taxes</a>
+        <a class="nav-item" data-page="rentals">2 · Rental Properties</a>
+        <a class="nav-item" data-page="grants">3 · RSU &amp; ISO Grants</a>
+        <a class="nav-item" data-page="expenses">4 · Cash &amp; Expenses</a>
+      </div>
+      <div class="nav-section">
+        <div class="label">Analysis</div>
+        <a class="nav-item" data-page="strategy">5 · Strategy &amp; Optimizer</a>
+        <a class="nav-item" data-page="stress">6 · Stress Testing</a>
+      </div>
+      <div class="nav-section">
+        <div class="label">Settings</div>
+        <a class="nav-item" data-page="constants">Tax Constants</a>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="status" class="muted">Ready.</div>
+      <button id="btn-export">Export JSON</button>
+      <button id="btn-import">Import JSON</button>
+      <button id="btn-reset" class="danger">Reset defaults</button>
+      <input type="file" id="import-file" accept="application/json" style="display:none">
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- ============ PROFILE & BASE TAXES ============ -->
+    <section class="page active" data-page="profile">
+      <h2>Profile &amp; Base Taxes</h2>
+      <div class="subtitle">A gross estimate of your recurring annual base tax picture — W-2 income, filing status, dependents. Refined by the equity strategy engine later.</div>
+
+      <div class="panel">
+        <h3>Household</h3>
+        <div class="grid grid-4">
+          <div class="field"><label>Planning start year</label>
+            <input type="number" data-bind="profile.startYear" min="2024" max="2050" step="1"></div>
+          <div class="field"><label>Horizon (years)</label>
+            <input type="number" data-bind="profile.horizonYears" min="1" max="30" step="1"></div>
+          <div class="field"><label>Filing status</label>
+            <select data-bind="profile.filingStatus">
+              <option value="mfj">Married filing jointly</option>
+              <option value="single">Single</option>
+              <option value="mfs">Married filing separately</option>
+              <option value="hoh">Head of household</option>
+            </select></div>
+          <div class="field"><label>State</label>
+            <select data-bind="profile.state">
+              <option value="PA">Pennsylvania (3.07%)</option>
+              <option value="OH">Ohio (~3.5%)</option>
+              <option value="NY">New York (~6.85%)</option>
+              <option value="CA">California (~9.3%)</option>
+              <option value="TX">Texas (0%)</option>
+              <option value="FL">Florida (0%)</option>
+              <option value="CUSTOM">Custom flat rate</option>
+            </select></div>
+          <div class="field"><label>Custom state rate (%)</label>
+            <input type="number" data-bind="profile.customStateRate" step="0.01" min="0"></div>
+          <div class="field"><label>Local (EIT) rate (%)</label>
+            <input type="number" data-bind="profile.localRate" step="0.01" min="0"></div>
+          <div class="field"><label>Dependents (CTC-eligible, &lt;17)</label>
+            <input type="number" data-bind="profile.dependentsCTC" min="0" step="1"></div>
+          <div class="field"><label>Other dependents (ODC)</label>
+            <input type="number" data-bind="profile.dependentsODC" min="0" step="1"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>W-2 Income <span class="hint">(grows by wage growth % per year)</span></h3>
+        <div class="grid grid-4">
+          <div class="field"><label>Your wages (gross)</label>
+            <input type="number" data-bind="income.wages" step="1000"></div>
+          <div class="field"><label>Spouse wages (gross)</label>
+            <input type="number" data-bind="income.spouseWages" step="1000"></div>
+          <div class="field"><label>Bonus (annual)</label>
+            <input type="number" data-bind="income.bonus" step="1000"></div>
+          <div class="field"><label>Wage growth %/yr</label>
+            <input type="number" data-bind="income.wageGrowth" step="0.1"></div>
+          <div class="field"><label>Pre-tax 401(k)</label>
+            <input type="number" data-bind="income.pretax401k" step="500"></div>
+          <div class="field"><label>HSA (employee + employer)</label>
+            <input type="number" data-bind="income.hsa" step="100"></div>
+          <div class="field"><label>Interest / ord. dividends</label>
+            <input type="number" data-bind="income.interestOrdDiv" step="100"></div>
+          <div class="field"><label>Qualified dividends</label>
+            <input type="number" data-bind="income.qualDiv" step="100"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Deductions <span class="hint">(itemized — auto compared with standard)</span></h3>
+        <div class="grid grid-4">
+          <div class="field"><label>State income tax paid</label>
+            <input type="number" data-bind="ded.stateIncomeTax" step="100"></div>
+          <div class="field"><label>Real-estate tax</label>
+            <input type="number" data-bind="ded.realEstateTax" step="100"></div>
+          <div class="field"><label>Mortgage interest</label>
+            <input type="number" data-bind="ded.mortgageInterest" step="100"></div>
+          <div class="field"><label>Charitable (cash + non-cash)</label>
+            <input type="number" data-bind="ded.charity" step="100"></div>
+        </div>
+      </div>
+
+      <div class="panel result">
+        <h3>Base-year estimate (equity strategy adds on top)</h3>
+        <div id="base-summary" class="summary-grid"></div>
+      </div>
+    </section>
+
+    <!-- ============ RENTAL ============ -->
+    <section class="page" data-page="rentals">
+      <h2>Rental Properties</h2>
+      <div class="subtitle">Passive rental income & expenses. Net loss (if any) is treated per federal passive-activity rules (carryforward tracked).</div>
+      <div class="panel">
+        <div class="table-actions">
+          <button class="primary" id="add-rental">+ Add rental</button>
+          <span class="muted small">Depreciation is a non-cash deduction. Enter the annual amount your CPA computes (residential = basis/27.5).</span>
+        </div>
+        <table id="rentals-table">
+          <thead><tr>
+            <th>Label</th>
+            <th class="num">Rent</th>
+            <th class="num">Mortgage int.</th>
+            <th class="num">Taxes</th>
+            <th class="num">Insurance</th>
+            <th class="num">Other exp.</th>
+            <th class="num">Depreciation</th>
+            <th class="num">Net (fed)</th>
+            <th></th>
+          </tr></thead>
+          <tbody></tbody>
+          <tfoot><tr>
+            <th>Totals</th>
+            <th class="num" data-total="rent"></th>
+            <th class="num" colspan="5"></th>
+            <th class="num" data-total="net"></th>
+            <th></th>
+          </tr></tfoot>
+        </table>
+        <div class="grid grid-2" style="margin-top:12px">
+          <div class="field"><label>Passive-loss carryforward (federal)</label>
+            <input type="number" data-bind="rental.palCarryFed" step="100"></div>
+          <div class="field"><label>Passive-loss carryforward (state)</label>
+            <input type="number" data-bind="rental.palCarryState" step="100"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ GRANTS ============ -->
+    <section class="page" data-page="grants">
+      <h2>RSU &amp; ISO Grants</h2>
+      <div class="subtitle">Assumed single ticker (the equity you receive from your employer).</div>
+
+      <div class="panel">
+        <h3>Equity setup</h3>
+        <div class="grid grid-4">
+          <div class="field"><label>Ticker</label>
+            <input type="text" data-bind="equity.ticker"></div>
+          <div class="field"><label>Current FMV ($/share)</label>
+            <input type="number" data-bind="equity.currentFMV" step="0.01"></div>
+          <div class="field"><label>Baseline FMV growth %/yr</label>
+            <input type="number" data-bind="equity.fmvGrowth" step="0.5"></div>
+          <div class="field"><label>Vested shares already held (long)</label>
+            <input type="number" data-bind="equity.sharesHeld" step="1"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Import from E*TRADE
+          <span class="hint">CSV export from stockplan.etrade.com</span>
+        </h3>
+        <div class="import-help">
+          <ol>
+            <li>Log in at <b>us.etrade.com</b> → <b>Stock Plan</b> → <b>My Account</b> → <b>Benefit History</b>.</li>
+            <li>At top-right click <b>Download Expanded</b>. This produces <code>BenefitHistory.xlsx</code> containing every grant, vest, exercise and release with grant IDs, strike, FMV at grant, vesting schedule, and expiration.</li>
+            <li>Save it as CSV (Excel → File → Save As → CSV) and drop it below. The parser will pre-fill grants; edit anything after.</li>
+          </ol>
+          <div class="import-row">
+            <input type="file" id="etrade-file" accept=".csv,text/csv">
+            <button class="secondary" id="etrade-clear">Clear import</button>
+            <span id="etrade-status" class="muted small"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Grants</h3>
+        <div class="table-actions">
+          <button class="primary" id="add-grant">+ Add grant</button>
+          <button class="secondary" id="rebuild-schedule">Rebuild vest schedules</button>
+        </div>
+        <table id="grants-table">
+          <thead><tr>
+            <th>Type</th><th>Label</th><th>Grant date</th>
+            <th class="num">Granted</th>
+            <th class="num">Strike</th>
+            <th class="num">FMV @ grant</th>
+            <th>Vest start</th>
+            <th>Cadence</th>
+            <th class="num">Vest months</th>
+            <th class="num">Cliff mo.</th>
+            <th>Expiration</th>
+            <th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h3>Projected vest calendar</h3>
+        <table id="vest-calendar">
+          <thead><tr>
+            <th>Date</th><th>Grant</th><th>Type</th>
+            <th class="num">Shares</th><th class="num">FMV assumed</th>
+            <th class="num">Value</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ EXPENSES ============ -->
+    <section class="page" data-page="expenses">
+      <h2>Cash &amp; Expenses</h2>
+      <div class="subtitle">Starting cash and one-off / dated expenses that must be funded out of cash on hand.</div>
+      <div class="panel">
+        <h3>Cash position</h3>
+        <div class="grid grid-4">
+          <div class="field"><label>Cash on hand today ($)</label>
+            <input type="number" data-bind="profile.cashOnHand" step="1000"></div>
+          <div class="field"><label>Baseline annual living expenses ($)</label>
+            <input type="number" data-bind="profile.livingExpenses" step="1000"></div>
+          <div class="field"><label>Expense inflation %/yr</label>
+            <input type="number" data-bind="profile.expenseInflation" step="0.1"></div>
+          <div class="field"><label>Minimum cash balance to preserve ($)</label>
+            <input type="number" data-bind="profile.minCash" step="1000"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Dated expenses</h3>
+        <div class="table-actions">
+          <button class="primary" id="add-expense">+ Add expense</button>
+          <span class="muted small">Non-recurring outflows (tuition, down payment, wedding, home project…). Counted against cash on their due date.</span>
+        </div>
+        <table id="expenses-table">
+          <thead><tr>
+            <th>Date</th><th>Label</th><th class="num">Amount ($)</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ STRATEGY ============ -->
+    <section class="page" data-page="strategy">
+      <h2>Strategy &amp; Optimizer</h2>
+      <div class="subtitle">Runs many candidate strategies. Objective: maximize total wealth, minimize total tax, subject to constraints (min cash, AMT cap). Non-dominated strategies form the Pareto frontier.</div>
+      <div class="panel"><em class="muted">Optimizer will be enabled after the tax engine and grant model are populated. Come back after adding grants.</em></div>
+    </section>
+
+    <!-- ============ STRESS ============ -->
+    <section class="page" data-page="stress">
+      <h2>Stress Testing</h2>
+      <div class="subtitle">Runs a selected strategy against adverse FMV paths: cash drought, price crash after exercise, LTCG miss.</div>
+      <div class="panel"><em class="muted">Enabled once strategies exist.</em></div>
+    </section>
+
+    <!-- ============ CONSTANTS ============ -->
+    <section class="page" data-page="constants">
+      <h2>Tax Constants</h2>
+      <div class="subtitle">2025 defaults (OBBBA-aware). Edit for future tax years.</div>
+      <div class="panel">
+        <h3>Federal ordinary brackets ({{status}})</h3>
+        <table id="fed-brackets"><thead><tr>
+          <th class="num">Up to</th><th class="num">Rate</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3>Federal LTCG brackets</h3>
+        <table id="ltcg-brackets"><thead><tr>
+          <th class="num">Up to</th><th class="num">Rate</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3>AMT</h3>
+        <div class="grid grid-3">
+          <div class="field"><label>Exemption (MFJ)</label><input type="number" data-bind="K.amt.exemptionMFJ" step="100"></div>
+          <div class="field"><label>Exemption (Single)</label><input type="number" data-bind="K.amt.exemptionSingle" step="100"></div>
+          <div class="field"><label>Exemption (MFS)</label><input type="number" data-bind="K.amt.exemptionMFS" step="100"></div>
+          <div class="field"><label>Phaseout start (MFJ)</label><input type="number" data-bind="K.amt.phaseoutMFJ" step="100"></div>
+          <div class="field"><label>Phaseout start (Single)</label><input type="number" data-bind="K.amt.phaseoutSingle" step="100"></div>
+          <div class="field"><label>26/28% breakpoint</label><input type="number" data-bind="K.amt.breakpoint" step="100"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Other</h3>
+        <div class="grid grid-3">
+          <div class="field"><label>Standard deduction (MFJ)</label><input type="number" data-bind="K.stdDed.mfj" step="100"></div>
+          <div class="field"><label>Standard deduction (Single)</label><input type="number" data-bind="K.stdDed.single" step="100"></div>
+          <div class="field"><label>SALT cap (MFJ)</label><input type="number" data-bind="K.saltCapMFJ" step="1000"></div>
+          <div class="field"><label>NIIT rate</label><input type="number" data-bind="K.niitRate" step="0.001"></div>
+          <div class="field"><label>NIIT threshold (MFJ)</label><input type="number" data-bind="K.niitMFJ" step="1000"></div>
+          <div class="field"><label>CTC per child</label><input type="number" data-bind="K.ctcPerChild" step="50"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
