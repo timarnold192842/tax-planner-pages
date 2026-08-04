@@ -362,6 +362,10 @@ function renderGrants() {
   S.equity.grants.forEach((g, idx) => {
     const card = document.createElement('div');
     card.className = 'grant-card';
+    const sched = Array.isArray(g.vestSchedule) ? g.vestSchedule : [];
+    const schedSummary = sched.length
+      ? `<div class="grant-sched">Imported schedule: <b>${sched.length}</b> vests, ${fmtN(sched.reduce((s,v)=>s+v.shares,0))} shares, ${sched[0].date} → ${sched[sched.length-1].date}</div>`
+      : `<div class="grant-sched muted">Synthesized: ${g.cadence} for ${g.vestMonths||0}mo${g.cliffMonths?` (${g.cliffMonths}mo cliff)`:''} from ${g.vestStart||'?'}</div>`;
     card.innerHTML = `
       <button class="link danger del" data-del="${idx}" title="Delete grant">×</button>
       <div class="grant-head">
@@ -373,6 +377,7 @@ function renderGrants() {
         <input class="label" type="text" value="${escapeHtml(g.label||'')}" data-k="label" placeholder="Grant label">
         <span class="pill ${(g.type||'').toLowerCase()}">${g.type||''}</span>
       </div>
+      ${schedSummary}
       <div class="grant-grid">
         <div class="field"><label>Grant date</label>
           <input type="date" value="${g.grantDate||''}" data-k="grantDate"></div>
@@ -389,20 +394,20 @@ function renderGrants() {
         <div class="field"><label>Vested now (shares)</label>
           <input type="number" value="${g.exercisableNow||0}" data-k="exercisableNow" step="1"></div>
 
-        <div class="field"><label>Vest start</label>
-          <input type="date" value="${g.vestStart||''}" data-k="vestStart"></div>
-        <div class="field"><label>Cadence</label>
-          <select data-k="cadence">
+        <div class="field"><label>Vest start ${sched.length?'<span class="muted">(from schedule)</span>':''}</label>
+          <input type="date" value="${g.vestStart||''}" data-k="vestStart" ${sched.length?'disabled':''}></div>
+        <div class="field"><label>Cadence ${sched.length?'<span class="muted">(from schedule)</span>':''}</label>
+          <select data-k="cadence" ${sched.length?'disabled':''}>
             <option value="monthly"${g.cadence==='monthly'?' selected':''}>Monthly</option>
             <option value="quarterly"${g.cadence==='quarterly'?' selected':''}>Quarterly</option>
             <option value="annual"${g.cadence==='annual'?' selected':''}>Annual</option>
             <option value="cliff"${g.cadence==='cliff'?' selected':''}>Single cliff</option>
           </select></div>
 
-        <div class="field"><label>Vest period (months)</label>
-          <input type="number" value="${g.vestMonths||0}" data-k="vestMonths" step="1"></div>
-        <div class="field"><label>Cliff (months)</label>
-          <input type="number" value="${g.cliffMonths||0}" data-k="cliffMonths" step="1"></div>
+        <div class="field"><label>Vest period (months) ${sched.length?'<span class="muted">(from schedule)</span>':''}</label>
+          <input type="number" value="${g.vestMonths||0}" data-k="vestMonths" step="1" ${sched.length?'disabled':''}></div>
+        <div class="field"><label>Cliff (months) ${sched.length?'<span class="muted">(from schedule)</span>':''}</label>
+          <input type="number" value="${g.cliffMonths||0}" data-k="cliffMonths" step="1" ${sched.length?'disabled':''}></div>
       </div>
     `;
     wrap.appendChild(card);
@@ -446,7 +451,14 @@ function addGrant() {
 
 /* ---------- Vest schedule expansion ---------- */
 function expandVests(g) {
-  // returns [{date: 'YYYY-MM-DD', shares}] over the full vest window
+  // Prefer explicit vestSchedule if present (from multi-row Benefit History import)
+  if (Array.isArray(g.vestSchedule) && g.vestSchedule.length) {
+    return g.vestSchedule
+      .filter(v => v && v.date && v.shares > 0)
+      .map(v => ({ date: v.date, shares: +v.shares }))
+      .sort((a,b) => a.date.localeCompare(b.date));
+  }
+  // Otherwise synthesize from cadence + months + cliff
   if (!g.vestStart || !g.shares) return [];
   const start = new Date(g.vestStart + 'T00:00:00');
   if (isNaN(+start)) return [];
@@ -460,7 +472,6 @@ function expandVests(g) {
   const cliff = g.cliffMonths || 0;
   const remainingMonths = totalMonths - cliff;
   const numSteps = Math.max(1, Math.floor(remainingMonths / stepMonths));
-  const totalGrants = numSteps + (cliff > 0 ? 1 : 0);
   const cliffFrac = cliff > 0 ? (cliff / totalMonths) : 0;
   const cliffShares = Math.round(g.shares * cliffFrac);
   const remShares = g.shares - cliffShares;
@@ -545,7 +556,8 @@ function parseCSV(text) {
  */
 function importETradeOne(text, filename) {
   const rows = parseCSV(text);
-  const diag = { filename, headerRow: -1, kind: 'unknown', columns: {}, warn: [], grants: 0 };
+  const diag = { filename, headerRow: -1, kind: 'unknown', columns: {}, warn: [], grants: 0,
+                 headerCells: [], sampleRow: [] };
   if (!rows.length) return { grants: [], diag: { ...diag, err: 'Empty file' } };
 
   // Find the header row (one that contains "Grant Number" or "Grant Date")
@@ -559,10 +571,12 @@ function importETradeOne(text, filename) {
     }
   }
   if (headerIdx < 0) {
-    return { grants: [], diag: { ...diag, err: 'No E*TRADE header row detected. Expected columns like "Grant Number", "Grant Date".' } };
+    diag.headerCells = (rows[0] || []).slice(0, 20);
+    return { grants: [], diag: { ...diag, err: 'No E*TRADE header row detected. Expected columns like "Grant Number", "Grant Date". First row above.' } };
   }
   const header = headerRaw.map(c => c.toLowerCase().trim());
   diag.headerRow = headerIdx + 1;
+  diag.headerCells = headerRaw;
 
   // Column matchers — first exact-string match, then contains-any
   const findCol = (candidates) => {
@@ -589,21 +603,37 @@ function importETradeOne(text, filename) {
       h === 'grant date fmv' || h === 'fmv at grant' || h === 'fmv @ grant'
       || h === 'grant date fair market value' || h === 'fmv');
     if (strict >= 0) return strict;
-    // Fall back to any header containing "fmv" but *not* "value"
     return header.findIndex(h => h.includes('fmv') && !h.includes('value') && !h.includes('total'));
   })();
   const cExp      = findCol(['expiration date', 'expiration', 'expire date']);
   const cVestSt   = findCol(['vest start', 'vest from', 'vesting start date']);
   const cVestMo   = findCol(['vest period', 'vesting term', 'vest term']);
   const cVestedNow= findCol(['exercisable', 'vested', 'vested quantity', 'sellable']);
+  // Per-vest-row columns (Benefit History Expanded)
+  const cVestDate = findCol(['vest date', 'vesting date']);
+  const cVestQty  = (() => {
+    // Prefer a per-vest quantity column that's distinct from "Total Grant"
+    const strict = header.findIndex(h =>
+      h === 'vest quantity' || h === 'vested quantity' || h === 'quantity vested'
+      || h === 'shares vested' || h === 'vested shares');
+    if (strict >= 0) return strict;
+    // Some exports use "Quantity" alongside "Vest Date"
+    if (cVestDate >= 0) {
+      const q = header.findIndex(h => h === 'quantity' || h === 'shares');
+      if (q >= 0) return q;
+    }
+    return -1;
+  })();
 
   diag.columns = { number: cNumber, type: cType, grantDate: cGrantDt, shares: cShares, strike: cStrike,
-                   fmv: cFMV, expiration: cExp, vestStart: cVestSt, vestPeriod: cVestMo, vested: cVestedNow };
+                   fmv: cFMV, expiration: cExp, vestStart: cVestSt, vestPeriod: cVestMo, vested: cVestedNow,
+                   vestDate: cVestDate, vestQty: cVestQty };
 
   // Guess file kind from the header set
-  if (cStrike >= 0 && cExp >= 0) diag.kind = 'Stock Options';
+  if (cVestDate >= 0 && cVestQty >= 0) diag.kind = 'Benefit History (per-vest rows)';
+  else if (cStrike >= 0 && cExp >= 0)  diag.kind = 'Stock Options';
   else if (cVestedNow >= 0 && cStrike < 0) diag.kind = 'Restricted Stock';
-  else diag.kind = 'Benefit History';
+  else diag.kind = 'Generic';
 
   const byNum = new Map();
   for (let i = headerIdx + 1; i < rows.length; i++) {
@@ -611,38 +641,73 @@ function importETradeOne(text, filename) {
     if (!r || !r.length) continue;
     const num = cNumber >= 0 ? (r[cNumber] || '').trim() : '';
     if (!num) continue;
-    if (byNum.has(num)) continue; // first occurrence wins
-    const type = (cType >= 0 ? r[cType] : '').trim().toUpperCase();
-    const typeNorm =
-        type.includes('RSU') || type.includes('RESTRICTED') ? 'RSU'
-      : type.includes('ISO') || type.includes('INCENTIVE') ? 'ISO'
-      : type.includes('NSO') || type.includes('NON-QUAL') || type.includes('NONQUAL') || type.includes('NQSO') ? 'NSO'
-      : (cStrike >= 0 ? 'ISO' : 'RSU');
-    const grantDate = normDate(cGrantDt >= 0 ? r[cGrantDt] : '');
-    const shares = numOrZero(cShares >= 0 ? r[cShares] : 0);
-    const strike = numOrZero(cStrike >= 0 ? r[cStrike] : 0);
-    const fmvRaw = numOrZero(cFMV >= 0 ? r[cFMV] : 0);
-    // Sanity check: if FMV came in as total-value (huge vs. strike), null it out
-    const fmv = (fmvRaw > 0 && shares > 0 && strike > 0 && fmvRaw > strike * shares * 0.5) ? 0 : fmvRaw;
-    if (fmvRaw !== fmv) diag.warn.push(`grant ${num}: FMV column looked like a total; dropped.`);
-    const vestMonths = numOrZero(cVestMo >= 0 ? r[cVestMo] : 0) || 48;
-    const g = {
-      id: uid(),
-      type: typeNorm,
-      label: `${typeNorm} ${num}`,
-      grantDate,
-      shares,
-      strike,
-      fmvAtGrant: fmv,
-      vestStart: normDate(cVestSt >= 0 ? r[cVestSt] : grantDate),
-      cadence: typeNorm === 'RSU' ? 'quarterly' : 'monthly',
-      vestMonths,
-      cliffMonths: typeNorm === 'RSU' ? 0 : 12,
-      exercisableNow: numOrZero(cVestedNow >= 0 ? r[cVestedNow] : 0),
-      expDate: normDate(cExp >= 0 ? r[cExp] : ''),
-    };
-    byNum.set(num, g);
+    if (!diag.sampleRow.length) diag.sampleRow = r.slice(0, headerRaw.length);
+
+    // Vest-event row: if this row carries a Vest Date + Quantity, append to the
+    // running grant's vestSchedule (aggregate).
+    const vestDate = cVestDate >= 0 ? normDate(r[cVestDate]) : '';
+    const vestQty  = cVestQty  >= 0 ? numOrZero(r[cVestQty]) : 0;
+
+    let g = byNum.get(num);
+    if (!g) {
+      // First time seeing this grant — build summary fields.
+      const type = (cType >= 0 ? r[cType] : '').trim().toUpperCase();
+      const typeNorm =
+          type.includes('RSU') || type.includes('RESTRICTED') ? 'RSU'
+        : type.includes('ISO') || type.includes('INCENTIVE') ? 'ISO'
+        : type.includes('NSO') || type.includes('NON-QUAL') || type.includes('NONQUAL') || type.includes('NQSO') ? 'NSO'
+        : (cStrike >= 0 ? 'ISO' : 'RSU');
+      const grantDate = normDate(cGrantDt >= 0 ? r[cGrantDt] : '');
+      const shares = numOrZero(cShares >= 0 ? r[cShares] : 0);
+      const strike = numOrZero(cStrike >= 0 ? r[cStrike] : 0);
+      const fmvRaw = numOrZero(cFMV >= 0 ? r[cFMV] : 0);
+      const fmv = (fmvRaw > 0 && shares > 0 && strike > 0 && fmvRaw > strike * shares * 0.5) ? 0 : fmvRaw;
+      if (fmvRaw !== fmv) diag.warn.push(`grant ${num}: FMV column looked like a total; dropped.`);
+      const vestMonths = numOrZero(cVestMo >= 0 ? r[cVestMo] : 0) || 48;
+      g = {
+        id: uid(),
+        type: typeNorm,
+        label: `${typeNorm} ${num}`,
+        grantDate,
+        shares,
+        strike,
+        fmvAtGrant: fmv,
+        vestStart: normDate(cVestSt >= 0 ? r[cVestSt] : grantDate),
+        cadence: typeNorm === 'RSU' ? 'quarterly' : 'monthly',
+        vestMonths,
+        cliffMonths: 0,
+        exercisableNow: numOrZero(cVestedNow >= 0 ? r[cVestedNow] : 0),
+        expDate: normDate(cExp >= 0 ? r[cExp] : ''),
+        vestSchedule: [],
+      };
+      byNum.set(num, g);
+    }
+    if (vestDate && vestQty > 0) {
+      g.vestSchedule.push({ date: vestDate, shares: vestQty });
+    }
   }
+  // Post-process: for grants that got an explicit schedule, sort + compute total.
+  // Also, if summary shares was zero but schedule has data, sum up.
+  byNum.forEach(g => {
+    if (g.vestSchedule && g.vestSchedule.length) {
+      g.vestSchedule.sort((a,b) => a.date.localeCompare(b.date));
+      const sum = g.vestSchedule.reduce((s,v) => s + v.shares, 0);
+      if (!g.shares) g.shares = sum;
+      // Set vestStart to the first vest for display
+      g.vestStart = g.vestSchedule[0].date;
+      // Derive months / cadence for the UI display (informational only — sim uses vestSchedule directly)
+      if (g.vestSchedule.length > 1) {
+        const first = new Date(g.vestSchedule[0].date + 'T00:00:00');
+        const last  = new Date(g.vestSchedule[g.vestSchedule.length-1].date + 'T00:00:00');
+        const monthsSpan = Math.round((last - first) / (30.4375 * 86400e3));
+        g.vestMonths = monthsSpan + Math.round(monthsSpan / (g.vestSchedule.length - 1));
+        const gap = Math.round(monthsSpan / (g.vestSchedule.length - 1));
+        g.cadence = gap >= 10 ? 'annual' : gap >= 2 ? 'quarterly' : 'monthly';
+      } else {
+        g.cadence = 'cliff';
+      }
+    }
+  });
   diag.grants = byNum.size;
   return { grants: [...byNum.values()], diag };
 }
@@ -670,22 +735,50 @@ function numOrZero(v) {
   return isFinite(n) ? n : 0;
 }
 function normDate(v) {
-  if (!v) return '';
-  const s = String(v).trim();
-  const mmddyyyy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (mmddyyyy) {
-    let y = mmddyyyy[3]; if (y.length === 2) y = (+y > 50 ? '19' : '20') + y;
-    return `${y}-${mmddyyyy[1].padStart(2,'0')}-${mmddyyyy[2].padStart(2,'0')}`;
+  if (v == null || v === '') return '';
+  let s = String(v).trim();
+  if (!s) return '';
+  // Strip trailing time component ("2020-07-15 00:00:00", "2020-07-15T00:00:00Z")
+  s = s.replace(/[T\s]\d{1,2}:\d{2}(:\d{2})?(\.\d+)?Z?$/, '');
+  // mm/dd/yyyy or mm-dd-yyyy
+  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (m) {
+    let mo = m[1], d = m[2], y = m[3];
+    if (y.length === 2) y = (+y > 50 ? '19' : '20') + y;
+    // If year came first (yyyy-mm-dd but matched as m[3]), fall through
+    if (+mo > 12 && +y > 12) return '';
+    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
   }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // "Aug 20, 2023" style
-  const long = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/);
-  if (long) {
-    const m = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
-      .findIndex(x => long[1].toLowerCase().startsWith(x));
-    if (m >= 0) return `${long[3]}-${String(m+1).padStart(2,'0')}-${long[2].padStart(2,'0')}`;
+  // yyyy-mm-dd or yyyy/mm/dd
+  m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  // yyyymmdd
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  // "Aug 20, 2023" or "August 20 2023"
+  m = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (m) {
+    const mi = monthIndex(m[1]);
+    if (mi >= 0) return `${m[3]}-${String(mi+1).padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  }
+  // "20-Aug-2023" / "20 Aug 2023" / "20-Aug-23"
+  m = s.match(/^(\d{1,2})[\s\-]([A-Za-z]{3,9})[\s\-](\d{2,4})$/);
+  if (m) {
+    const mi = monthIndex(m[2]);
+    let y = m[3]; if (y.length === 2) y = (+y > 50 ? '19' : '20') + y;
+    if (mi >= 0) return `${y}-${String(mi+1).padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  }
+  // Last resort: Date.parse
+  const t = Date.parse(s);
+  if (!isNaN(t)) {
+    const d = new Date(t);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
   return '';
+}
+function monthIndex(name) {
+  return ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+    .findIndex(x => name.toLowerCase().startsWith(x));
 }
 
 function setupETradeImport() {
@@ -708,18 +801,21 @@ function setupETradeImport() {
         const line = document.createElement('div');
         line.className = 'file-row';
         if (r.diag.err) {
-          line.innerHTML = `<span class="err">✗</span> <b>${escapeHtml(r.diag.filename)}</b>: ${escapeHtml(r.diag.err)}`;
+          const preview = r.diag.headerCells.length
+            ? `<div class="small mono">First row: ${r.diag.headerCells.map(escapeHtml).join(' | ')}</div>` : '';
+          line.innerHTML = `<span class="err">✗</span> <b>${escapeHtml(r.diag.filename)}</b>: ${escapeHtml(r.diag.err)}${preview}`;
         } else {
           let added = 0, updated = 0;
           r.grants.forEach(g => {
             const existing = merged.get(g.label);
             if (existing) {
-              // Merge: prefer non-empty/non-zero from incoming
               for (const k of Object.keys(g)) {
                 if (k === 'id') continue;
                 const v = g[k];
-                if (v == null || v === '' || v === 0) continue;
-                if (existing[k] == null || existing[k] === '' || existing[k] === 0) existing[k] = v;
+                if (v == null || v === '' || v === 0
+                    || (Array.isArray(v) && !v.length)) continue;
+                if (existing[k] == null || existing[k] === '' || existing[k] === 0
+                    || (Array.isArray(existing[k]) && !existing[k].length)) existing[k] = v;
               }
               updated++;
             } else {
@@ -728,11 +824,21 @@ function setupETradeImport() {
             }
           });
           addedTotal += added; updatedTotal += updated;
-          const detected = Object.entries(r.diag.columns)
-            .map(([k, v]) => `${k}:${v>=0?'✓':'—'}`).join(' ');
+          const cols = r.diag.columns;
+          const detected = Object.entries(cols)
+            .map(([k, v]) => {
+              const idx = v;
+              const name = idx >= 0 ? r.diag.headerCells[idx] : '';
+              return `<b>${k}</b>: ${idx >= 0 ? escapeHtml(name || '?') : '—'}`;
+            }).join(' · ');
           const warns = r.diag.warn.length
               ? `<div class="warn">${r.diag.warn.map(escapeHtml).join('<br>')}</div>` : '';
-          line.innerHTML = `<span class="ok">✓</span> <b>${escapeHtml(r.diag.filename)}</b> — detected <i>${r.diag.kind}</i> at header row ${r.diag.headerRow}. Grants parsed: <b>${r.grants.length}</b> (added ${added}, updated ${updated}).<br>Columns: <span class="mono small">${detected}</span>${warns}`;
+          const headerPreview = `<div class="small mono">Header row ${r.diag.headerRow}: ${r.diag.headerCells.map(escapeHtml).join(' | ')}</div>`;
+          const sample = r.diag.sampleRow.length
+            ? `<div class="small mono">Sample row: ${r.diag.sampleRow.map(escapeHtml).join(' | ')}</div>` : '';
+          line.innerHTML =
+            `<span class="ok">✓</span> <b>${escapeHtml(r.diag.filename)}</b> — detected <i>${r.diag.kind}</i>. Grants: <b>${r.grants.length}</b> (added ${added}, updated ${updated}).`
+            + `<div class="small">Mapping: ${detected}</div>${headerPreview}${sample}${warns}`;
         }
         diagEl.appendChild(line);
       });
