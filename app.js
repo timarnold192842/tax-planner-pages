@@ -580,7 +580,8 @@ function importETradeOne(text, filename) {
   const delim = rows._delim || ',';
   const delimName = delim === '\t' ? 'TAB' : delim === ',' ? 'comma' : delim === ';' ? 'semicolon' : delim === '|' ? 'pipe' : delim;
   const diag = { filename, headerRow: -1, kind: 'unknown', columns: {}, warn: [], grants: 0,
-                 headerCells: [], sampleRow: [], delimiter: delimName };
+                 headerCells: [], sampleRow: [], delimiter: delimName,
+                 recordTypes: new Set(), eventTypes: new Set() };
   if (!rows.length) return { grants: [], diag: { ...diag, err: 'Empty file' } };
 
   // Find the header row (one that contains "Grant Number" or "Grant Date")
@@ -743,27 +744,27 @@ function importETradeOne(text, filename) {
       if (v > 0) g.vestMonths = v;
     }
 
-    // Per-row vest event — only accept rows where Event Type is a real vest
-    // (skip Releases, Deferrals, Withholding, Cancellations, etc.).
+    // Per-row vest event — collect broadly, then aggregate by unique vest date
+    // (taking max shares per date). This handles the case where E*TRADE emits
+    // multiple sub-rows per vest (Vest + Release + Tax Withholding).
     const vestDate = normDate(cell(r, cVestDate));
     const vestQty  = numOrZero(cell(r, cVestQty));
     const evt      = cell(r, cEventType).toLowerCase();
     const recType  = cell(r, cRecType).toLowerCase();
-    const isVestEvent =
-      (!evt && !recType && vestDate && vestQty > 0)   // headerless per-vest row
-      || evt.includes('vest')                          // "Vest", "Vesting"
-      || (recType.includes('vest') && !evt.includes('release') && !evt.includes('withhold'));
-    const isNonVestEvent =
-      evt.includes('release')
-      || evt.includes('cancel')
-      || evt.includes('withhold')
-      || evt.includes('tax')
-      || evt.includes('defer')
-      || evt.includes('dividend')
-      || evt.includes('exercise')
-      || evt.includes('sale')
-      || evt.includes('transfer');
-    if (vestDate && vestQty > 0 && isVestEvent && !isNonVestEvent) {
+    if (evt) diag.eventTypes.add(evt);
+    if (recType) diag.recordTypes.add(recType);
+    // Skip obvious non-vest rows (Cancel, Withholding-only, Sale, Transfer,
+    // Dividend, Exercise, Deferred). Keep everything else — we dedupe by date.
+    const isNonVest =
+      evt.includes('cancel') || evt.includes('withhold') || evt.includes('tax')
+      || evt.includes('dividend') || evt.includes('exercise') || evt.includes('sale')
+      || evt.includes('transfer') || evt.includes('defer')
+      || recType.includes('cancel') || recType.includes('withhold') || recType.includes('tax')
+      || recType.includes('dividend') || recType.includes('exercise') || recType.includes('sale');
+    // Reject values that look like dollars (huge magnitudes vs share count).
+    // Total granted is g.shares; per-vest shares should be well under that.
+    const looksLikeDollars = g.shares > 0 && vestQty > g.shares * 2;
+    if (vestDate && vestQty > 0 && !isNonVest && !looksLikeDollars) {
       g.vestSchedule.push({ date: vestDate, shares: vestQty });
     }
   }
@@ -771,14 +772,14 @@ function importETradeOne(text, filename) {
   // Post-process: derive vestStart / cadence / months from the imported schedule
   byNum.forEach(g => {
     if (g.vestSchedule && g.vestSchedule.length) {
-      // Dedupe: same date + same shares only once
-      const seen = new Set();
-      g.vestSchedule = g.vestSchedule.filter(v => {
-        const k = v.date + '|' + v.shares;
-        if (seen.has(k)) return false;
-        seen.add(k); return true;
+      // Aggregate by unique vest date — keep the MAX shares per date, which is
+      // typically the actual Vest event (larger than Release/Withheld sub-rows).
+      const byDate = new Map();
+      g.vestSchedule.forEach(v => {
+        const cur = byDate.get(v.date);
+        if (!cur || v.shares > cur.shares) byDate.set(v.date, v);
       });
-      g.vestSchedule.sort((a,b) => a.date.localeCompare(b.date));
+      g.vestSchedule = [...byDate.values()].sort((a,b) => a.date.localeCompare(b.date));
       const sum = g.vestSchedule.reduce((s,v) => s + v.shares, 0);
       if (!g.shares) g.shares = sum;
       g.vestStart = g.vestSchedule[0].date;
@@ -788,13 +789,32 @@ function importETradeOne(text, filename) {
         const gap = Math.round((last - first) / ((g.vestSchedule.length - 1) * 30.4375 * 86400e3));
         g.cadence = gap >= 10 ? 'annual' : gap >= 2 ? 'quarterly' : 'monthly';
         g.vestMonths = Math.round((last - first) / (30.4375 * 86400e3)) + gap;
+        // Detect cliff: if the first vest is disproportionately larger than the
+        // rest, or the gap from grantDate to first vest is much larger than the
+        // regular gap, that's a cliff.
+        if (g.grantDate) {
+          const grant = new Date(g.grantDate + 'T00:00:00');
+          const preGap = Math.round((first - grant) / (30.4375 * 86400e3));
+          if (preGap > gap * 2 && preGap > 3) {
+            g.cliffMonths = preGap;
+          }
+        }
+        // Also detect share-based cliffs (first vest shares > 2x median)
+        const median = [...g.vestSchedule].map(v => v.shares).sort((a,b)=>a-b)[Math.floor(g.vestSchedule.length/2)];
+        if (median > 0 && g.vestSchedule[0].shares > median * 2 && !g.cliffMonths) {
+          if (g.grantDate) {
+            const grant = new Date(g.grantDate + 'T00:00:00');
+            g.cliffMonths = Math.round((first - grant) / (30.4375 * 86400e3));
+          }
+        }
       } else {
         g.cadence = 'cliff';
       }
     }
-    // If we couldn't get FMV from CSV, fall back to strike (a common ISO reality)
     if (!g.fmvAtGrant && g.strike) g.fmvAtGrant = g.strike;
   });
+  diag.recordTypes = [...diag.recordTypes];
+  diag.eventTypes = [...diag.eventTypes];
   diag.grants = byNum.size;
   return { grants: [...byNum.values()], diag };
 }
@@ -923,9 +943,11 @@ function setupETradeImport() {
           const headerPreview = `<div class="small mono">Header row ${r.diag.headerRow}: ${r.diag.headerCells.map(escapeHtml).join(' | ')}</div>`;
           const sample = r.diag.sampleRow.length
             ? `<div class="small mono">Sample row: ${r.diag.sampleRow.map(escapeHtml).join(' | ')}</div>` : '';
+          const seen = (r.diag.recordTypes.length || r.diag.eventTypes.length)
+            ? `<div class="small">Record types seen: ${escapeHtml(r.diag.recordTypes.join(', ') || '—')} · Event types seen: ${escapeHtml(r.diag.eventTypes.join(', ') || '—')}</div>` : '';
           line.innerHTML =
             `<span class="ok">✓</span> <b>${escapeHtml(r.diag.filename)}</b> — detected <i>${r.diag.kind}</i>. Delimiter: <b>${r.diag.delimiter}</b>. Grants: <b>${r.grants.length}</b> (added ${added}, updated ${updated}).`
-            + `<div class="small">Mapping: ${detected}</div>${headerPreview}${sample}${warns}`;
+            + `<div class="small">Mapping: ${detected}</div>${seen}${headerPreview}${sample}${warns}`;
         }
         diagEl.appendChild(line);
       });
