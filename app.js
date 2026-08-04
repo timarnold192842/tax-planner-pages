@@ -617,10 +617,8 @@ function importETradeOne(text, filename) {
   const cNumber   = findCol(['grant number', 'grant #', 'grant id']);
   const cType     = findCol(['award type', 'grant type', 'plan type', 'type']);
   const cGrantDt  = findCol(['grant date', 'award date']);
-  const cShares   = findCol(['total grant', 'total granted', 'granted', 'shares granted', 'grant quantity', 'total awarded']);
-  // Strict strike matcher — must be a *price* column
-  const cStrike   = findCol(['grant price', 'exercise price', 'strike price', 'strike']);
-  // Strict FMV per-share — never match "grant value", "award value"
+  const cShares   = findCol(['granted qty.', 'granted qty', 'total grant', 'total granted', 'granted', 'shares granted', 'grant quantity', 'total awarded']);
+  const cStrike   = findCol(['exercise price', 'grant price', 'strike price', 'strike']);
   const cFMV      = (() => {
     const strict = header.findIndex(h =>
       h === 'grant date fmv' || h === 'fmv at grant' || h === 'fmv @ grant'
@@ -631,105 +629,153 @@ function importETradeOne(text, filename) {
   const cExp      = findCol(['expiration date', 'expiration', 'expire date']);
   const cVestSt   = findCol(['vest start', 'vest from', 'vesting start date']);
   const cVestMo   = findCol(['vest period', 'vesting term', 'vest term']);
-  const cVestedNow= findCol(['exercisable', 'vested', 'vested quantity', 'sellable']);
-  // Per-vest-row columns (Benefit History Expanded)
+  const cVestedNow= findCol(['exercisable qty.', 'exercisable qty', 'exercisable', 'sellable qty.', 'sellable qty', 'sellable', 'vested qty.', 'vested qty', 'vested']);
   const cVestDate = findCol(['vest date', 'vesting date']);
+  // Per-vest quantity — E*TRADE uses "Vesting Qty." (Options) and "Qty. or Amount" (Restricted)
   const cVestQty  = (() => {
-    // Prefer a per-vest quantity column that's distinct from "Total Grant"
-    const strict = header.findIndex(h =>
-      h === 'vest quantity' || h === 'vested quantity' || h === 'quantity vested'
-      || h === 'shares vested' || h === 'vested shares');
-    if (strict >= 0) return strict;
-    // Some exports use "Quantity" alongside "Vest Date"
+    // Prefer per-event quantity column names
+    const candidates = ['vesting qty.', 'vesting qty', 'qty. or amount', 'qty or amount',
+                        'quantity or amount', 'vest quantity', 'quantity vested',
+                        'shares vested', 'vested shares'];
+    for (const cand of candidates) {
+      const idx = header.findIndex(h => h === cand);
+      if (idx >= 0) return idx;
+    }
+    // If we have Vest Date, look for the closest "qty"/"quantity" column that
+    // *isn't* the same as cVestedNow (which is the summary count).
     if (cVestDate >= 0) {
-      const q = header.findIndex(h => h === 'quantity' || h === 'shares');
-      if (q >= 0) return q;
+      let best = -1, bestDist = 999;
+      header.forEach((h, i) => {
+        if (i === cVestedNow) return;
+        if (h === 'qty' || h === 'qty.' || h === 'quantity' || h === 'shares') {
+          const d = Math.abs(i - cVestDate);
+          if (d < bestDist) { best = i; bestDist = d; }
+        }
+      });
+      return best;
     }
     return -1;
   })();
+  const cRecType  = findCol(['record type']);
 
   diag.columns = { number: cNumber, type: cType, grantDate: cGrantDt, shares: cShares, strike: cStrike,
                    fmv: cFMV, expiration: cExp, vestStart: cVestSt, vestPeriod: cVestMo, vested: cVestedNow,
-                   vestDate: cVestDate, vestQty: cVestQty };
+                   vestDate: cVestDate, vestQty: cVestQty, recordType: cRecType };
 
-  // Guess file kind from the header set
   if (cVestDate >= 0 && cVestQty >= 0) diag.kind = 'Benefit History (per-vest rows)';
   else if (cStrike >= 0 && cExp >= 0)  diag.kind = 'Stock Options';
   else if (cVestedNow >= 0 && cStrike < 0) diag.kind = 'Restricted Stock';
   else diag.kind = 'Generic';
 
+  // Helper: read + normalize a cell if column is valid and non-empty
+  const cell = (r, i) => (i >= 0 && r[i] != null) ? String(r[i]).trim() : '';
+
   const byNum = new Map();
+  let lastNum = null; // for propagating grant number across "Vest" sub-rows
+
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const r = rows[i];
     if (!r || !r.length) continue;
-    const num = cNumber >= 0 ? (r[cNumber] || '').trim() : '';
-    if (!num) continue;
-    if (!diag.sampleRow.length) diag.sampleRow = r.slice(0, headerRaw.length);
 
-    // Vest-event row: if this row carries a Vest Date + Quantity, append to the
-    // running grant's vestSchedule (aggregate).
-    const vestDate = cVestDate >= 0 ? normDate(r[cVestDate]) : '';
-    const vestQty  = cVestQty  >= 0 ? numOrZero(r[cVestQty]) : 0;
+    // Determine grant number — propagate from the last row if this row is a sub-row
+    let num = cell(r, cNumber);
+    if (!num) num = lastNum;
+    if (!num) continue;
+
+    if (!diag.sampleRow.length) diag.sampleRow = r.slice(0, headerRaw.length);
 
     let g = byNum.get(num);
     if (!g) {
-      // First time seeing this grant — build summary fields.
-      const type = (cType >= 0 ? r[cType] : '').trim().toUpperCase();
+      // Determine type — check any row for a value; default from strike presence
+      const rawType = cell(r, cType).toUpperCase();
       const typeNorm =
-          type.includes('RSU') || type.includes('RESTRICTED') ? 'RSU'
-        : type.includes('ISO') || type.includes('INCENTIVE') ? 'ISO'
-        : type.includes('NSO') || type.includes('NON-QUAL') || type.includes('NONQUAL') || type.includes('NQSO') ? 'NSO'
+          rawType.includes('RSU') || rawType.includes('RESTRICTED') ? 'RSU'
+        : rawType.includes('ISO') || rawType.includes('INCENTIVE') ? 'ISO'
+        : rawType.includes('NSO') || rawType.includes('NON-QUAL') || rawType.includes('NONQUAL') || rawType.includes('NQSO') ? 'NSO'
         : (cStrike >= 0 ? 'ISO' : 'RSU');
-      const grantDate = normDate(cGrantDt >= 0 ? r[cGrantDt] : '');
-      const shares = numOrZero(cShares >= 0 ? r[cShares] : 0);
-      const strike = numOrZero(cStrike >= 0 ? r[cStrike] : 0);
-      const fmvRaw = numOrZero(cFMV >= 0 ? r[cFMV] : 0);
-      const fmv = (fmvRaw > 0 && shares > 0 && strike > 0 && fmvRaw > strike * shares * 0.5) ? 0 : fmvRaw;
-      if (fmvRaw !== fmv) diag.warn.push(`grant ${num}: FMV column looked like a total; dropped.`);
-      const vestMonths = numOrZero(cVestMo >= 0 ? r[cVestMo] : 0) || 48;
       g = {
         id: uid(),
         type: typeNorm,
         label: `${typeNorm} ${num}`,
-        grantDate,
-        shares,
-        strike,
-        fmvAtGrant: fmv,
-        vestStart: normDate(cVestSt >= 0 ? r[cVestSt] : grantDate),
+        grantDate: '',
+        shares: 0,
+        strike: 0,
+        fmvAtGrant: 0,
+        vestStart: '',
         cadence: typeNorm === 'RSU' ? 'quarterly' : 'monthly',
-        vestMonths,
+        vestMonths: 0,
         cliffMonths: 0,
-        exercisableNow: numOrZero(cVestedNow >= 0 ? r[cVestedNow] : 0),
-        expDate: normDate(cExp >= 0 ? r[cExp] : ''),
+        exercisableNow: 0,
+        expDate: '',
         vestSchedule: [],
       };
       byNum.set(num, g);
     }
+    lastNum = num;
+
+    // Merge non-empty values from this row (first-wins per field)
+    if (!g.grantDate)      g.grantDate  = normDate(cell(r, cGrantDt));
+    if (!g.expDate)        g.expDate    = normDate(cell(r, cExp));
+    if (!g.vestStart)      g.vestStart  = normDate(cell(r, cVestSt));
+    if (!g.shares) {
+      const s = numOrZero(cell(r, cShares));
+      if (s > 0) g.shares = s;
+    }
+    if (!g.strike) {
+      const s = numOrZero(cell(r, cStrike));
+      if (s > 0) g.strike = s;
+    }
+    if (!g.fmvAtGrant) {
+      const raw = numOrZero(cell(r, cFMV));
+      const shares = g.shares || numOrZero(cell(r, cShares));
+      // Reject "total value" masquerading as per-share FMV
+      const clean = (raw > 0 && shares > 0 && g.strike > 0 && raw > g.strike * shares * 0.5) ? 0 : raw;
+      if (clean !== raw) diag.warn.push(`grant ${num}: FMV column looked like a total; dropped.`);
+      if (clean > 0) g.fmvAtGrant = clean;
+    }
+    if (!g.exercisableNow) {
+      const v = numOrZero(cell(r, cVestedNow));
+      if (v > 0) g.exercisableNow = v;
+    }
+    if (!g.vestMonths) {
+      const v = numOrZero(cell(r, cVestMo));
+      if (v > 0) g.vestMonths = v;
+    }
+
+    // Per-row vest event
+    const vestDate = normDate(cell(r, cVestDate));
+    const vestQty  = numOrZero(cell(r, cVestQty));
     if (vestDate && vestQty > 0) {
       g.vestSchedule.push({ date: vestDate, shares: vestQty });
     }
   }
-  // Post-process: for grants that got an explicit schedule, sort + compute total.
-  // Also, if summary shares was zero but schedule has data, sum up.
+
+  // Post-process: derive vestStart / cadence / months from the imported schedule
   byNum.forEach(g => {
     if (g.vestSchedule && g.vestSchedule.length) {
+      // Dedupe: same date + same shares only once
+      const seen = new Set();
+      g.vestSchedule = g.vestSchedule.filter(v => {
+        const k = v.date + '|' + v.shares;
+        if (seen.has(k)) return false;
+        seen.add(k); return true;
+      });
       g.vestSchedule.sort((a,b) => a.date.localeCompare(b.date));
       const sum = g.vestSchedule.reduce((s,v) => s + v.shares, 0);
       if (!g.shares) g.shares = sum;
-      // Set vestStart to the first vest for display
       g.vestStart = g.vestSchedule[0].date;
-      // Derive months / cadence for the UI display (informational only — sim uses vestSchedule directly)
       if (g.vestSchedule.length > 1) {
         const first = new Date(g.vestSchedule[0].date + 'T00:00:00');
         const last  = new Date(g.vestSchedule[g.vestSchedule.length-1].date + 'T00:00:00');
-        const monthsSpan = Math.round((last - first) / (30.4375 * 86400e3));
-        g.vestMonths = monthsSpan + Math.round(monthsSpan / (g.vestSchedule.length - 1));
-        const gap = Math.round(monthsSpan / (g.vestSchedule.length - 1));
+        const gap = Math.round((last - first) / ((g.vestSchedule.length - 1) * 30.4375 * 86400e3));
         g.cadence = gap >= 10 ? 'annual' : gap >= 2 ? 'quarterly' : 'monthly';
+        g.vestMonths = Math.round((last - first) / (30.4375 * 86400e3)) + gap;
       } else {
         g.cadence = 'cliff';
       }
     }
+    // If we couldn't get FMV from CSV, fall back to strike (a common ISO reality)
+    if (!g.fmvAtGrant && g.strike) g.fmvAtGrant = g.strike;
   });
   diag.grants = byNum.size;
   return { grants: [...byNum.values()], diag };
