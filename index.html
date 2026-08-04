@@ -268,15 +268,158 @@
     <!-- ============ STRATEGY ============ -->
     <section class="page" data-page="strategy">
       <h2>Strategy &amp; Optimizer</h2>
-      <div class="subtitle">Runs many candidate strategies. Objective: maximize total wealth, minimize total tax, subject to constraints (min cash, AMT cap). Non-dominated strategies form the Pareto frontier.</div>
-      <div class="panel"><em class="muted">Optimizer will be enabled after the tax engine and grant model are populated. Come back after adding grants.</em></div>
+      <div class="subtitle">Every strategy is a compact rule set — how aggressively to exercise ISOs, whether to hold them, how much RSU to sell at vest. The engine expands it into an event timeline, computes taxes each year, and tracks cash and wealth through the horizon.</div>
+
+      <div class="panel">
+        <h3>Constraints &amp; scenario</h3>
+        <div class="grid grid-4">
+          <div class="field"><label>Ticker FMV scenario</label>
+            <select data-bind="strategy.scenario">
+              <option value="base">Base (default growth)</option>
+              <option value="bull">Bull (2× growth)</option>
+              <option value="bear">Bear (−5%/yr)</option>
+              <option value="flat">Flat (no growth)</option>
+            </select></div>
+          <div class="field"><label>Min cash constraint ($)</label>
+            <input type="number" data-bind="profile.minCash" step="1000"></div>
+          <div class="field"><label>Max AMT/yr ($, 0 = uncapped)</label>
+            <input type="number" data-bind="strategy.maxAMT" step="5000"></div>
+          <div class="field"><label>Include unsold equity in "wealth"?</label>
+            <select data-bind="strategy.wealthIncludesEquity">
+              <option value="true">Yes — mark to market</option>
+              <option value="false">No — cash only</option>
+            </select></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Base strategy knobs <span class="hint">(applied to every year unless overridden)</span></h3>
+        <div class="grid grid-4">
+          <div class="field"><label>ISO exercise %/yr (of vested)</label>
+            <input type="range" data-bind="strategy.isoExercisePct" min="0" max="100" step="5">
+            <div class="mono small" id="v-isoex"></div></div>
+          <div class="field"><label>Of exercised: % held (else same-day-sell)</label>
+            <input type="range" data-bind="strategy.isoHoldPct" min="0" max="100" step="5">
+            <div class="mono small" id="v-isohold"></div></div>
+          <div class="field"><label>RSU sell-at-vest %</label>
+            <input type="range" data-bind="strategy.rsuSellPct" min="0" max="100" step="5">
+            <div class="mono small" id="v-rsusell"></div></div>
+          <div class="field"><label>Held-shares sell % (long-held)</label>
+            <input type="range" data-bind="strategy.heldSellPct" min="0" max="100" step="5">
+            <div class="mono small" id="v-heldsell"></div></div>
+          <div class="field"><label>ISO priority</label>
+            <select data-bind="strategy.isoPriority">
+              <option value="expiring">Expiring soonest</option>
+              <option value="lowest-strike">Lowest strike (biggest spread)</option>
+              <option value="highest-strike">Highest strike (smallest AMT)</option>
+              <option value="oldest">Oldest grant first</option>
+            </select></div>
+          <div class="field"><label>Sell-to-cover</label>
+            <select data-bind="strategy.stc">
+              <option value="none">None (pay strike + AMT from cash)</option>
+              <option value="strike">Cover strike from FMV</option>
+              <option value="amt">Cover strike + est. AMT</option>
+            </select></div>
+          <div class="field"><label>Force exercise if &lt; N months to expiration</label>
+            <input type="number" data-bind="strategy.forceExpireMonths" step="1"></div>
+          <div class="field"><label>Fund exercise cash from RSU sales?</label>
+            <select data-bind="strategy.fundFromRSU">
+              <option value="true">Yes — sell RSU shortfall</option>
+              <option value="false">No</option>
+            </select></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Run strategy</h3>
+        <div class="table-actions">
+          <button class="primary" id="run-strategy">Simulate current strategy</button>
+          <button class="secondary" id="run-optimizer">Search Pareto frontier</button>
+          <span id="strategy-status" class="muted small"></span>
+        </div>
+        <div id="strategy-summary" class="summary-grid"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Cash on hand over time</h3>
+        <div class="chart-wrap"><canvas id="chart-cash"></canvas></div>
+      </div>
+
+      <div class="panel">
+        <h3>Wealth composition (cash + unsold equity)</h3>
+        <div class="chart-wrap"><canvas id="chart-wealth"></canvas></div>
+      </div>
+
+      <div class="panel">
+        <h3>Yearly events</h3>
+        <table id="strategy-years"><thead><tr>
+          <th>Year</th>
+          <th class="num">RSU vest ($)</th>
+          <th class="num">ISO exer. (shares)</th>
+          <th class="num">Bargain ($)</th>
+          <th class="num">STCG ($)</th>
+          <th class="num">LTCG ($)</th>
+          <th class="num">Tax total ($)</th>
+          <th class="num">AMT ($)</th>
+          <th class="num">Cash end ($)</th>
+          <th class="num">Equity mkt ($)</th>
+          <th class="num">Wealth ($)</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+
+      <div class="panel">
+        <h3>Pareto frontier <span class="hint">(strategies not dominated on both wealth and tax)</span></h3>
+        <div class="chart-wrap"><canvas id="chart-pareto"></canvas></div>
+        <table id="pareto-table"><thead><tr>
+          <th></th><th>Name</th>
+          <th class="num">Ending wealth ($)</th>
+          <th class="num">Total tax ($)</th>
+          <th class="num">Min cash ($)</th>
+          <th class="num">Max AMT yr ($)</th>
+          <th>Feasible?</th>
+          <th></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
     </section>
 
     <!-- ============ STRESS ============ -->
     <section class="page" data-page="stress">
       <h2>Stress Testing</h2>
-      <div class="subtitle">Runs a selected strategy against adverse FMV paths: cash drought, price crash after exercise, LTCG miss.</div>
-      <div class="panel"><em class="muted">Enabled once strategies exist.</em></div>
+      <div class="subtitle">Runs the current strategy against adverse FMV paths. Reveals AMT-then-crash scenarios where you owe cash tax on paper gains that then evaporated.</div>
+
+      <div class="panel">
+        <h3>Scenarios</h3>
+        <div class="grid grid-4">
+          <div class="field"><label>Shock size</label>
+            <input type="range" data-bind="stress.shockPct" min="10" max="90" step="5">
+            <div class="mono small" id="v-shock"></div></div>
+          <div class="field"><label>Shock year (relative to start)</label>
+            <input type="number" data-bind="stress.shockYear" min="0" step="1"></div>
+          <div class="field"><label>Post-shock growth %/yr</label>
+            <input type="number" data-bind="stress.postShockGrowth" step="0.5"></div>
+          <div class="field"><label>Wage recession years</label>
+            <input type="number" data-bind="stress.wageRecessionYears" min="0" step="1"></div>
+        </div>
+        <div class="table-actions" style="margin-top:12px">
+          <button class="primary" id="run-stress">Run stress test</button>
+          <span id="stress-status" class="muted small"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Cash under stress</h3>
+        <div class="chart-wrap"><canvas id="chart-stress-cash"></canvas></div>
+      </div>
+
+      <div class="panel">
+        <h3>Wealth under stress</h3>
+        <div class="chart-wrap"><canvas id="chart-stress-wealth"></canvas></div>
+      </div>
+
+      <div class="panel">
+        <h3>Worst-case summary</h3>
+        <div id="stress-summary" class="summary-grid"></div>
+      </div>
     </section>
 
     <!-- ============ CONSTANTS ============ -->
@@ -322,5 +465,6 @@
 </div>
 
 <script src="app.js"></script>
+<script src="sim.js"></script>
 </body>
 </html>

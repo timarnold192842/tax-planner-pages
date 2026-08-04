@@ -62,6 +62,25 @@ const DEFAULT_STATE = {
     grants: [],
   },
   expenses: [], // { id, date: 'YYYY-MM-DD', label, amount }
+  strategy: {
+    scenario: 'base',
+    maxAMT: 0,
+    wealthIncludesEquity: 'true',
+    isoExercisePct: 0,     // % of vested ISO shares to exercise each year
+    isoHoldPct: 100,       // of exercised, % held (rest same-day-sold)
+    rsuSellPct: 40,        // % of RSU vests sold same-day (rest kept)
+    heldSellPct: 0,        // % of long-held shares sold each year
+    isoPriority: 'expiring',
+    stc: 'strike',
+    forceExpireMonths: 12, // force exercise if <N months to exp
+    fundFromRSU: 'true',
+  },
+  stress: {
+    shockPct: 50,
+    shockYear: 1,
+    postShockGrowth: 3.0,
+    wageRecessionYears: 0,
+  },
   K: structuredClone(DEFAULT_CONSTANTS),
 };
 
