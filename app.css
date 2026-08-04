@@ -142,3 +142,27 @@ input[type="range"] { padding: 0; }
 tr.frontier td { background: #eef8f1; }
 tr.infeasible td { background: #fbeeed; color: var(--bad); }
 button.select { padding: 4px 10px; font-size: 11.5px; }
+
+/* Grant cards */
+.grants-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.grant-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: #fbfcfd; position: relative; }
+.grant-card .grant-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.grant-card .grant-head input.label { flex: 1; font-weight: 600; padding: 4px 6px; border: 1px solid transparent; border-radius: 3px; background: transparent; }
+.grant-card .grant-head input.label:focus { border-color: var(--accent); background: #fff; }
+.grant-card .grant-head select.type { width: 70px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 3px; font: inherit; background: #fff; }
+.grant-card .grant-head .del { position: absolute; top: 6px; right: 6px; }
+.grant-card .grant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.grant-card .field { gap: 2px; }
+.grant-card .field label { font-size: 10px; }
+.grant-card .field input, .grant-card .field select { padding: 4px 6px; font-size: 12px; }
+.grants-list:empty::before { content: "No grants yet ‚Äî click ÅC+ Add grantÅD or import from E*TRADE."; color: var(--muted); font-style: italic; }
+
+.import-diag { margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.import-diag .file-row { padding: 4px 0; border-top: 1px solid var(--line); }
+.import-diag .file-row:first-child { border-top: none; }
+.import-diag .ok { color: var(--good); }
+.import-diag .warn { color: var(--warn); }
+.import-diag .err { color: var(--bad); }
+
+#vest-calendar tbody:empty::after { content: "No upcoming vests ‚Äî add grants and click Rebuild."; }
+#vest-calendar tbody:empty { display: block; padding: 12px; color: var(--muted); font-style: italic; }

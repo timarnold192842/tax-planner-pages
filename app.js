@@ -354,60 +354,84 @@ function addRental() {
   saveState(); renderRentals(); renderDerived();
 }
 
-/* ---------- Grants CRUD ---------- */
+/* ---------- Grants CRUD (card-per-grant editor) ---------- */
 function renderGrants() {
-  const tbody = $('#grants-table tbody');
-  if (!tbody) return;
-  tbody.innerHTML = '';
+  const wrap = $('#grants-list');
+  if (!wrap) return;
+  wrap.innerHTML = '';
   S.equity.grants.forEach((g, idx) => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>
-        <select data-k="type">
+    const card = document.createElement('div');
+    card.className = 'grant-card';
+    card.innerHTML = `
+      <button class="link danger del" data-del="${idx}" title="Delete grant">×</button>
+      <div class="grant-head">
+        <select class="type" data-k="type">
           <option value="ISO"${g.type==='ISO'?' selected':''}>ISO</option>
           <option value="RSU"${g.type==='RSU'?' selected':''}>RSU</option>
           <option value="NSO"${g.type==='NSO'?' selected':''}>NSO</option>
         </select>
-      </td>
-      <td><input type="text" value="${g.label||''}" data-k="label"></td>
-      <td><input type="date" value="${g.grantDate||''}" data-k="grantDate"></td>
-      <td class="num"><input type="number" value="${g.shares||0}" data-k="shares"></td>
-      <td class="num"><input type="number" step="0.01" value="${g.strike||0}" data-k="strike"></td>
-      <td class="num"><input type="number" step="0.01" value="${g.fmvAtGrant||0}" data-k="fmvAtGrant"></td>
-      <td><input type="date" value="${g.vestStart||''}" data-k="vestStart"></td>
-      <td>
-        <select data-k="cadence">
-          <option value="monthly"${g.cadence==='monthly'?' selected':''}>monthly</option>
-          <option value="quarterly"${g.cadence==='quarterly'?' selected':''}>quarterly</option>
-          <option value="annual"${g.cadence==='annual'?' selected':''}>annual</option>
-          <option value="cliff"${g.cadence==='cliff'?' selected':''}>single cliff</option>
-        </select>
-      </td>
-      <td class="num"><input type="number" value="${g.vestMonths||0}" data-k="vestMonths"></td>
-      <td class="num"><input type="number" value="${g.cliffMonths||0}" data-k="cliffMonths"></td>
-      <td><input type="date" value="${g.expDate||''}" data-k="expDate"></td>
-      <td><button class="link danger" data-del="${idx}">×</button></td>
+        <input class="label" type="text" value="${escapeHtml(g.label||'')}" data-k="label" placeholder="Grant label">
+        <span class="pill ${(g.type||'').toLowerCase()}">${g.type||''}</span>
+      </div>
+      <div class="grant-grid">
+        <div class="field"><label>Grant date</label>
+          <input type="date" value="${g.grantDate||''}" data-k="grantDate"></div>
+        <div class="field"><label>Expiration</label>
+          <input type="date" value="${g.expDate||''}" data-k="expDate"></div>
+
+        <div class="field"><label>Shares granted</label>
+          <input type="number" value="${g.shares||0}" data-k="shares" step="1"></div>
+        <div class="field"><label>Strike ($/share)</label>
+          <input type="number" value="${g.strike||0}" data-k="strike" step="0.01"></div>
+
+        <div class="field"><label>FMV @ grant ($/share)</label>
+          <input type="number" value="${g.fmvAtGrant||0}" data-k="fmvAtGrant" step="0.01"></div>
+        <div class="field"><label>Vested now (shares)</label>
+          <input type="number" value="${g.exercisableNow||0}" data-k="exercisableNow" step="1"></div>
+
+        <div class="field"><label>Vest start</label>
+          <input type="date" value="${g.vestStart||''}" data-k="vestStart"></div>
+        <div class="field"><label>Cadence</label>
+          <select data-k="cadence">
+            <option value="monthly"${g.cadence==='monthly'?' selected':''}>Monthly</option>
+            <option value="quarterly"${g.cadence==='quarterly'?' selected':''}>Quarterly</option>
+            <option value="annual"${g.cadence==='annual'?' selected':''}>Annual</option>
+            <option value="cliff"${g.cadence==='cliff'?' selected':''}>Single cliff</option>
+          </select></div>
+
+        <div class="field"><label>Vest period (months)</label>
+          <input type="number" value="${g.vestMonths||0}" data-k="vestMonths" step="1"></div>
+        <div class="field"><label>Cliff (months)</label>
+          <input type="number" value="${g.cliffMonths||0}" data-k="cliffMonths" step="1"></div>
+      </div>
     `;
-    tbody.appendChild(tr);
+    wrap.appendChild(card);
   });
-  tbody.querySelectorAll('input,select').forEach(el => {
+  wrap.querySelectorAll('input,select').forEach(el => {
     el.addEventListener('input', () => {
-      const tr = el.closest('tr');
-      const idx = Array.from(tbody.children).indexOf(tr);
+      const card = el.closest('.grant-card');
+      const idx = Array.from(wrap.children).indexOf(card);
       const k = el.dataset.k;
       let v = el.value;
       if (el.type === 'number') v = v === '' ? 0 : parseFloat(v);
       S.equity.grants[idx][k] = v;
       saveState();
       renderVestCalendar();
+      // If type changed, refresh pill color
+      if (k === 'type') renderGrants();
     });
   });
-  tbody.querySelectorAll('button[data-del]').forEach(btn => {
+  wrap.querySelectorAll('button[data-del]').forEach(btn => {
     btn.addEventListener('click', () => {
       S.equity.grants.splice(+btn.dataset.del, 1);
       saveState(); renderGrants(); renderVestCalendar();
     });
   });
+  const count = $('#grant-count');
+  if (count) count.textContent = S.equity.grants.length ? `${S.equity.grants.length} grants` : '';
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function addGrant() {
   const today = new Date().toISOString().slice(0,10);
@@ -415,7 +439,7 @@ function addGrant() {
     id: uid(), type: 'RSU', label: 'New grant', grantDate: today,
     shares: 0, strike: 0, fmvAtGrant: S.equity.currentFMV,
     vestStart: today, cadence: 'quarterly', vestMonths: 48, cliffMonths: 12,
-    expDate: '',
+    exercisableNow: 0, expDate: '',
   });
   saveState(); renderGrants(); renderVestCalendar();
 }
@@ -511,60 +535,133 @@ function parseCSV(text) {
 }
 
 /**
- * Parses an E*TRADE Benefit History CSV. Format varies; we look for the header
- * row that contains "Grant Number", "Grant Type", "Grant Date", etc. and
- * accumulate one grant per unique grant number.
+ * Parse one E*TRADE CSV. Handles Stock Options, Restricted Stock, and
+ * Benefit-History-Expanded layouts. Returns { grants: [...], diag: {...} }.
+ *
+ * Strategy: locate the header row, then use *prioritized* column matchers
+ * (exact match preferred, then keyword) so we never confuse "Grant Price"
+ * (per-share strike) with "Grant Value" (total-dollar), or "Grant Date" with
+ * "Vest Date".
  */
-function importETrade(text) {
+function importETradeOne(text, filename) {
   const rows = parseCSV(text);
-  if (!rows.length) return { grants: [], errors: ['Empty file'] };
-  // Find header row
-  let headerIdx = -1, header = null;
-  for (let i = 0; i < Math.min(60, rows.length); i++) {
-    const r = rows[i].map(c => c.trim().toLowerCase());
-    if (r.some(c => c.includes('grant number') || c.includes('grant date')) &&
-        r.some(c => c.includes('type') || c.includes('plan type'))) {
-      headerIdx = i; header = r; break;
+  const diag = { filename, headerRow: -1, kind: 'unknown', columns: {}, warn: [], grants: 0 };
+  if (!rows.length) return { grants: [], diag: { ...diag, err: 'Empty file' } };
+
+  // Find the header row (one that contains "Grant Number" or "Grant Date")
+  let headerIdx = -1, headerRaw = null;
+  for (let i = 0; i < Math.min(80, rows.length); i++) {
+    const r = rows[i].map(c => (c||'').trim());
+    const lower = r.map(c => c.toLowerCase());
+    if ((lower.some(c => c === 'grant number' || c === 'grant #' || c.includes('grant number')))
+        && (lower.some(c => c.includes('grant date') || c.includes('grant type') || c.includes('award type')))) {
+      headerIdx = i; headerRaw = r; break;
     }
   }
-  if (headerIdx < 0) return { grants: [], errors: ['Header row not found. Try re-exporting from E*TRADE with "Download Expanded".'] };
+  if (headerIdx < 0) {
+    return { grants: [], diag: { ...diag, err: 'No E*TRADE header row detected. Expected columns like "Grant Number", "Grant Date".' } };
+  }
+  const header = headerRaw.map(c => c.toLowerCase().trim());
+  diag.headerRow = headerIdx + 1;
 
-  const col = name => header.findIndex(h => h.includes(name));
-  const cType   = col('type');
-  const cNumber = col('grant number');
-  const cDate   = col('grant date');
-  const cShares = header.findIndex(h => h === 'shares' || h.includes('total grant') || h.includes('granted'));
-  const cStrike = header.findIndex(h => h.includes('grant price') || h.includes('exercise price') || h.includes('strike'));
-  const cFMV    = header.findIndex(h => h.includes('fmv') || h.includes('market value'));
-  const cExp    = header.findIndex(h => h.includes('expiration') || h.includes('expire'));
-  const cVestStart = header.findIndex(h => h.includes('vest start') || h.includes('vest from'));
-  const cVestMo = header.findIndex(h => h.includes('vest period') || h.includes('vest schedule') || h.includes('vesting term'));
+  // Column matchers — first exact-string match, then contains-any
+  const findCol = (candidates) => {
+    for (const cand of candidates) {
+      const exact = header.findIndex(h => h === cand);
+      if (exact >= 0) return exact;
+    }
+    for (const cand of candidates) {
+      const partial = header.findIndex(h => h.includes(cand));
+      if (partial >= 0) return partial;
+    }
+    return -1;
+  };
+
+  const cNumber   = findCol(['grant number', 'grant #', 'grant id']);
+  const cType     = findCol(['award type', 'grant type', 'plan type', 'type']);
+  const cGrantDt  = findCol(['grant date', 'award date']);
+  const cShares   = findCol(['total grant', 'total granted', 'granted', 'shares granted', 'grant quantity', 'total awarded']);
+  // Strict strike matcher — must be a *price* column
+  const cStrike   = findCol(['grant price', 'exercise price', 'strike price', 'strike']);
+  // Strict FMV per-share — never match "grant value", "award value"
+  const cFMV      = (() => {
+    const strict = header.findIndex(h =>
+      h === 'grant date fmv' || h === 'fmv at grant' || h === 'fmv @ grant'
+      || h === 'grant date fair market value' || h === 'fmv');
+    if (strict >= 0) return strict;
+    // Fall back to any header containing "fmv" but *not* "value"
+    return header.findIndex(h => h.includes('fmv') && !h.includes('value') && !h.includes('total'));
+  })();
+  const cExp      = findCol(['expiration date', 'expiration', 'expire date']);
+  const cVestSt   = findCol(['vest start', 'vest from', 'vesting start date']);
+  const cVestMo   = findCol(['vest period', 'vesting term', 'vest term']);
+  const cVestedNow= findCol(['exercisable', 'vested', 'vested quantity', 'sellable']);
+
+  diag.columns = { number: cNumber, type: cType, grantDate: cGrantDt, shares: cShares, strike: cStrike,
+                   fmv: cFMV, expiration: cExp, vestStart: cVestSt, vestPeriod: cVestMo, vested: cVestedNow };
+
+  // Guess file kind from the header set
+  if (cStrike >= 0 && cExp >= 0) diag.kind = 'Stock Options';
+  else if (cVestedNow >= 0 && cStrike < 0) diag.kind = 'Restricted Stock';
+  else diag.kind = 'Benefit History';
 
   const byNum = new Map();
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const r = rows[i];
     if (!r || !r.length) continue;
-    const num = cNumber >= 0 ? r[cNumber]?.trim() : '';
+    const num = cNumber >= 0 ? (r[cNumber] || '').trim() : '';
     if (!num) continue;
-    if (byNum.has(num)) continue;
+    if (byNum.has(num)) continue; // first occurrence wins
     const type = (cType >= 0 ? r[cType] : '').trim().toUpperCase();
+    const typeNorm =
+        type.includes('RSU') || type.includes('RESTRICTED') ? 'RSU'
+      : type.includes('ISO') || type.includes('INCENTIVE') ? 'ISO'
+      : type.includes('NSO') || type.includes('NON-QUAL') || type.includes('NONQUAL') || type.includes('NQSO') ? 'NSO'
+      : (cStrike >= 0 ? 'ISO' : 'RSU');
+    const grantDate = normDate(cGrantDt >= 0 ? r[cGrantDt] : '');
+    const shares = numOrZero(cShares >= 0 ? r[cShares] : 0);
+    const strike = numOrZero(cStrike >= 0 ? r[cStrike] : 0);
+    const fmvRaw = numOrZero(cFMV >= 0 ? r[cFMV] : 0);
+    // Sanity check: if FMV came in as total-value (huge vs. strike), null it out
+    const fmv = (fmvRaw > 0 && shares > 0 && strike > 0 && fmvRaw > strike * shares * 0.5) ? 0 : fmvRaw;
+    if (fmvRaw !== fmv) diag.warn.push(`grant ${num}: FMV column looked like a total; dropped.`);
+    const vestMonths = numOrZero(cVestMo >= 0 ? r[cVestMo] : 0) || 48;
     const g = {
       id: uid(),
-      type: type.includes('RSU') ? 'RSU' : (type.includes('ISO') ? 'ISO' : (type.includes('NSO') ? 'NSO' : 'RSU')),
-      label: `${type || 'Grant'} ${num}`,
-      grantDate: normDate(cDate >= 0 ? r[cDate] : ''),
-      shares: numOrZero(cShares >= 0 ? r[cShares] : 0),
-      strike: numOrZero(cStrike >= 0 ? r[cStrike] : 0),
-      fmvAtGrant: numOrZero(cFMV >= 0 ? r[cFMV] : 0),
-      vestStart: normDate(cVestStart >= 0 ? r[cVestStart] : (cDate >= 0 ? r[cDate] : '')),
-      cadence: 'quarterly',
-      vestMonths: numOrZero(cVestMo >= 0 ? r[cVestMo] : 48) || 48,
-      cliffMonths: 0,
+      type: typeNorm,
+      label: `${typeNorm} ${num}`,
+      grantDate,
+      shares,
+      strike,
+      fmvAtGrant: fmv,
+      vestStart: normDate(cVestSt >= 0 ? r[cVestSt] : grantDate),
+      cadence: typeNorm === 'RSU' ? 'quarterly' : 'monthly',
+      vestMonths,
+      cliffMonths: typeNorm === 'RSU' ? 0 : 12,
+      exercisableNow: numOrZero(cVestedNow >= 0 ? r[cVestedNow] : 0),
       expDate: normDate(cExp >= 0 ? r[cExp] : ''),
     };
     byNum.set(num, g);
   }
-  return { grants: [...byNum.values()], errors: [] };
+  diag.grants = byNum.size;
+  return { grants: [...byNum.values()], diag };
+}
+
+/**
+ * Merge grants across multiple CSV imports (deduped by grant number, later
+ * files fill missing fields). Existing grants with matching label are updated.
+ */
+function importETradeMulti(files, done) {
+  const perFile = [];
+  let remaining = files.length;
+  Array.from(files).forEach(file => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      perFile.push(importETradeOne(reader.result, file.name));
+      if (--remaining === 0) done(perFile);
+    };
+    reader.readAsText(file);
+  });
 }
 function numOrZero(v) {
   if (v == null) return 0;
@@ -575,36 +672,80 @@ function numOrZero(v) {
 function normDate(v) {
   if (!v) return '';
   const s = String(v).trim();
-  // Handle mm/dd/yyyy
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (m) {
-    let y = m[3]; if (y.length === 2) y = (+y > 50 ? '19' : '20') + y;
-    return `${y}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  const mmddyyyy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (mmddyyyy) {
+    let y = mmddyyyy[3]; if (y.length === 2) y = (+y > 50 ? '19' : '20') + y;
+    return `${y}-${mmddyyyy[1].padStart(2,'0')}-${mmddyyyy[2].padStart(2,'0')}`;
   }
-  // Handle yyyy-mm-dd
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // "Aug 20, 2023" style
+  const long = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (long) {
+    const m = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+      .findIndex(x => long[1].toLowerCase().startsWith(x));
+    if (m >= 0) return `${long[3]}-${String(m+1).padStart(2,'0')}-${long[2].padStart(2,'0')}`;
+  }
   return '';
 }
 
 function setupETradeImport() {
   const input = $('#etrade-file');
   const status = $('#etrade-status');
+  const diagEl = $('#etrade-diag');
   input?.addEventListener('change', () => {
-    const file = input.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const { grants, errors } = importETrade(reader.result);
-      if (errors.length) { status.textContent = 'Import error: ' + errors.join('; '); return; }
-      if (!grants.length) { status.textContent = 'No grants found.'; return; }
-      S.equity.grants = grants;
+    const files = input.files;
+    if (!files || !files.length) return;
+    status.textContent = `Reading ${files.length} file(s)…`;
+    diagEl.innerHTML = '';
+    importETradeMulti(files, (results) => {
+      // Merge grants across files, deduped by "Grant #" embedded in the label
+      const merged = new Map();
+      // seed with existing (so we don't blow away edits)
+      S.equity.grants.forEach(g => merged.set(g.label, g));
+      let addedTotal = 0, updatedTotal = 0;
+      const parts = [];
+      results.forEach(r => {
+        const line = document.createElement('div');
+        line.className = 'file-row';
+        if (r.diag.err) {
+          line.innerHTML = `<span class="err">✗</span> <b>${escapeHtml(r.diag.filename)}</b>: ${escapeHtml(r.diag.err)}`;
+        } else {
+          let added = 0, updated = 0;
+          r.grants.forEach(g => {
+            const existing = merged.get(g.label);
+            if (existing) {
+              // Merge: prefer non-empty/non-zero from incoming
+              for (const k of Object.keys(g)) {
+                if (k === 'id') continue;
+                const v = g[k];
+                if (v == null || v === '' || v === 0) continue;
+                if (existing[k] == null || existing[k] === '' || existing[k] === 0) existing[k] = v;
+              }
+              updated++;
+            } else {
+              merged.set(g.label, g);
+              added++;
+            }
+          });
+          addedTotal += added; updatedTotal += updated;
+          const detected = Object.entries(r.diag.columns)
+            .map(([k, v]) => `${k}:${v>=0?'✓':'—'}`).join(' ');
+          const warns = r.diag.warn.length
+              ? `<div class="warn">${r.diag.warn.map(escapeHtml).join('<br>')}</div>` : '';
+          line.innerHTML = `<span class="ok">✓</span> <b>${escapeHtml(r.diag.filename)}</b> — detected <i>${r.diag.kind}</i> at header row ${r.diag.headerRow}. Grants parsed: <b>${r.grants.length}</b> (added ${added}, updated ${updated}).<br>Columns: <span class="mono small">${detected}</span>${warns}`;
+        }
+        diagEl.appendChild(line);
+      });
+      S.equity.grants = [...merged.values()];
       saveState(); renderGrants(); renderVestCalendar();
-      status.textContent = `Imported ${grants.length} grants.`;
-    };
-    reader.readAsText(file);
+      status.textContent = `Done — ${addedTotal} new, ${updatedTotal} updated.`;
+    });
   });
   $('#etrade-clear')?.addEventListener('click', () => {
+    if (!confirm('Delete ALL grants?')) return;
     S.equity.grants = []; saveState(); renderGrants(); renderVestCalendar();
     status.textContent = 'Cleared.';
+    diagEl.innerHTML = '';
   });
 }
 

@@ -181,19 +181,21 @@
 
       <div class="panel">
         <h3>Import from E*TRADE
-          <span class="hint">CSV export from stockplan.etrade.com</span>
+          <span class="hint">CSV exports from us.etrade.com → Stock Plan</span>
         </h3>
         <div class="import-help">
+          <p><b>Two useful exports</b> — you can drop both at once (they merge by grant number):</p>
           <ol>
-            <li>Log in at <b>us.etrade.com</b> → <b>Stock Plan</b> → <b>My Account</b> → <b>Benefit History</b>.</li>
-            <li>At top-right click <b>Download Expanded</b>. This produces <code>BenefitHistory.xlsx</code> containing every grant, vest, exercise and release with grant IDs, strike, FMV at grant, vesting schedule, and expiration.</li>
-            <li>Save it as CSV (Excel → File → Save As → CSV) and drop it below. The parser will pre-fill grants; edit anything after.</li>
+            <li><b>Stock Options</b>: Stock Plan → My Account → <b>Holdings</b> → <b>Stock Options</b> tab → <b>Download</b>. One row per grant with <code>Grant Number</code>, <code>Grant Date</code>, <code>Grant Price</code>, <code>Expiration Date</code>, <code>Total Grant</code>, <code>Vested</code>, <code>Exercisable</code>.</li>
+            <li><b>Restricted Stock</b>: same page → <b>Restricted Stock</b> tab → <b>Download</b>. Includes <code>Grant Date</code>, <code>Total Grant</code>, <code>Vested</code>, <code>Sellable</code>, <code>Unvested</code>.</li>
           </ol>
+          <p>Also supported: <b>Benefit History → Download Expanded</b>.</p>
           <div class="import-row">
-            <input type="file" id="etrade-file" accept=".csv,text/csv">
-            <button class="secondary" id="etrade-clear">Clear import</button>
+            <input type="file" id="etrade-file" accept=".csv,text/csv" multiple>
+            <button class="secondary" id="etrade-clear">Clear grants</button>
             <span id="etrade-status" class="muted small"></span>
           </div>
+          <div id="etrade-diag" class="import-diag"></div>
         </div>
       </div>
 
@@ -201,23 +203,10 @@
         <h3>Grants</h3>
         <div class="table-actions">
           <button class="primary" id="add-grant">+ Add grant</button>
-          <button class="secondary" id="rebuild-schedule">Rebuild vest schedules</button>
+          <button class="secondary" id="rebuild-schedule">Rebuild vest calendar</button>
+          <span class="muted small" id="grant-count"></span>
         </div>
-        <table id="grants-table">
-          <thead><tr>
-            <th>Type</th><th>Label</th><th>Grant date</th>
-            <th class="num">Granted</th>
-            <th class="num">Strike</th>
-            <th class="num">FMV @ grant</th>
-            <th>Vest start</th>
-            <th>Cadence</th>
-            <th class="num">Vest months</th>
-            <th class="num">Cliff mo.</th>
-            <th>Expiration</th>
-            <th></th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
+        <div id="grants-list" class="grants-list"></div>
       </div>
 
       <div class="panel">
