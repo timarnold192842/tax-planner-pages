@@ -520,8 +520,28 @@ function renderVestCalendar() {
 }
 
 /* ---------- E*TRADE import ---------- */
-function parseCSV(text) {
-  const lines = text.split(/\r?\n/);
+/**
+ * Auto-detect delimiter (comma / tab / semicolon / pipe) by counting
+ * occurrences on the first few non-empty lines. Strips BOM.
+ */
+function detectDelimiter(text) {
+  const clean = text.replace(/^\uFEFF/, '');
+  const lines = clean.split(/\r?\n/).filter(l => l.trim()).slice(0, 20);
+  const candidates = [',', '\t', ';', '|'];
+  const counts = candidates.map(d => {
+    // Count occurrences per line, take median-ish
+    const perLine = lines.map(l => (l.match(new RegExp('\\' + d, 'g')) || []).length);
+    perLine.sort((a,b) => a-b);
+    return perLine[Math.floor(perLine.length/2)] || 0;
+  });
+  let best = 0, bestIdx = 0;
+  counts.forEach((c, i) => { if (c > best) { best = c; bestIdx = i; } });
+  return best > 0 ? candidates[bestIdx] : ',';
+}
+function parseCSV(text, delim) {
+  const clean = text.replace(/^\uFEFF/, '');
+  const d = delim || detectDelimiter(clean);
+  const lines = clean.split(/\r?\n/);
   const rows = [];
   for (const line of lines) {
     if (!line.trim()) continue;
@@ -534,7 +554,7 @@ function parseCSV(text) {
         else if (c === '"') inQ = false;
         else cur += c;
       } else {
-        if (c === ',') { cells.push(cur); cur = ''; }
+        if (c === d) { cells.push(cur); cur = ''; }
         else if (c === '"') inQ = true;
         else cur += c;
       }
@@ -542,6 +562,7 @@ function parseCSV(text) {
     cells.push(cur);
     rows.push(cells);
   }
+  rows._delim = d;
   return rows;
 }
 
@@ -556,8 +577,10 @@ function parseCSV(text) {
  */
 function importETradeOne(text, filename) {
   const rows = parseCSV(text);
+  const delim = rows._delim || ',';
+  const delimName = delim === '\t' ? 'TAB' : delim === ',' ? 'comma' : delim === ';' ? 'semicolon' : delim === '|' ? 'pipe' : delim;
   const diag = { filename, headerRow: -1, kind: 'unknown', columns: {}, warn: [], grants: 0,
-                 headerCells: [], sampleRow: [] };
+                 headerCells: [], sampleRow: [], delimiter: delimName };
   if (!rows.length) return { grants: [], diag: { ...diag, err: 'Empty file' } };
 
   // Find the header row (one that contains "Grant Number" or "Grant Date")
@@ -837,7 +860,7 @@ function setupETradeImport() {
           const sample = r.diag.sampleRow.length
             ? `<div class="small mono">Sample row: ${r.diag.sampleRow.map(escapeHtml).join(' | ')}</div>` : '';
           line.innerHTML =
-            `<span class="ok">✓</span> <b>${escapeHtml(r.diag.filename)}</b> — detected <i>${r.diag.kind}</i>. Grants: <b>${r.grants.length}</b> (added ${added}, updated ${updated}).`
+            `<span class="ok">✓</span> <b>${escapeHtml(r.diag.filename)}</b> — detected <i>${r.diag.kind}</i>. Delimiter: <b>${r.diag.delimiter}</b>. Grants: <b>${r.grants.length}</b> (added ${added}, updated ${updated}).`
             + `<div class="small">Mapping: ${detected}</div>${headerPreview}${sample}${warns}`;
         }
         diagEl.appendChild(line);
