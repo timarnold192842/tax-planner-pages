@@ -169,3 +169,5 @@ button.select { padding: 4px 10px; font-size: 11.5px; }
 
 .grant-sched { font-size: 11.5px; padding: 4px 6px; margin-bottom: 8px; background: #eef4fb; border-left: 3px solid var(--accent); border-radius: 3px; }
 .grant-sched.muted { background: #f4f6f8; border-left-color: var(--muted); color: var(--muted); font-style: italic; }
+
+.summary-card .v.warn { color: var(--warn); }

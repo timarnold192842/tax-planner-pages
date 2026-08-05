@@ -210,8 +210,6 @@ function computeYearTax(y) {
   const ctcReduction = Math.max(0, Math.ceil((agi - ctcPhaseoutStart) / 1000) * 50);
   const ctc = Math.max(0, ctcFull - ctcReduction);
 
-  const fedRegular = Math.max(0, fedOrdTax + fedLTCG - ctc);
-
   /* ---- AMT ---- */
   // AMTI = taxable ordinary + itemized SALT add-back (bargain element is included in AMT-only income) + AMT-only bargain
   const amtBargain = (y.isoBargainHeldAMT || 0);
@@ -228,7 +226,18 @@ function computeYearTax(y) {
       : K.amt.breakpoint * K.amt.rateLow + (amtOnOrd - K.amt.breakpoint) * K.amt.rateHigh;
   const amtLTCG = ltcgTax(amtOnOrd, ltcgAmt, status, K);
   const tmt = amtOrdTax + amtLTCG;
-  const amt = Math.max(0, tmt - (fedOrdTax + fedLTCG));
+  // Gross AMT = tentative-minimum-tax minus regular tax (before MTC).
+  const amtGross = Math.max(0, tmt - (fedOrdTax + fedLTCG));
+  // Minimum Tax Credit (MTC): AMT paid in prior years is available as a
+  // credit against *regular* federal tax to the extent that regular tax
+  // exceeds tentative minimum tax in the current year. IRC §53.
+  const mtcCarryIn = Math.max(0, y.mtcCarryIn || 0);
+  const mtcRoom = Math.max(0, (fedOrdTax + fedLTCG - ctc) - tmt);   // room = regular − TMT
+  const mtcUsed = Math.min(mtcCarryIn, mtcRoom);
+  const mtcCarryOut = Math.max(0, mtcCarryIn - mtcUsed + amtGross);  // add this year's AMT to carry
+  // Federal regular tax reduced by MTC used
+  const fedRegularAfterMTC = Math.max(0, (fedOrdTax + fedLTCG - ctc) - mtcUsed);
+  const amt = amtGross;
 
   /* ---- NIIT / additional Medicare ---- */
   const niitThresh = ({mfj: K.niitMFJ, single: K.niitSingle, mfs: K.niitMFS, hoh: K.niitHOH})[status];
@@ -251,13 +260,15 @@ function computeYearTax(y) {
   const localBase = wagesGross + (y.rsuOrdinary || 0) + (y.isoBargainOrdinary || 0);
   const localTax = Math.max(0, localBase) * localRate;
 
-  const totalFed = fedRegular + amt + niit + addlMed;
+  const totalFed = fedRegularAfterMTC + amt + niit + addlMed;
   const total = totalFed + stateTax + localTax;
 
   return {
     ordinary, deduction, itemized, salt, saltRaw,
     taxableOrd, agi,
-    fedOrdTax, fedLTCG, ctc, fedRegular,
+    fedOrdTax, fedLTCG, ctc,
+    fedRegular: fedRegularAfterMTC,
+    mtcCarryIn, mtcUsed, mtcCarryOut,
     amti, amtiEffective, tmt, amt,
     niit, addlMed,
     stateTax, localTax,

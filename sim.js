@@ -54,14 +54,25 @@ function simulate(strategy, options = {}) {
   const inflation = (S.profile.expenseInflation || 0) / 100;
   const path = fmvPath(strategy, S.equity.fmvGrowth || 0, horizon, options.shock);
 
-  // Cost-basis lots
+  // Cost-basis lots. Each lot tracks the info needed to correctly determine
+  // qualifying vs disqualifying disposition for ISO lots, and STCG vs LTCG
+  // for RSU lots.
+  //   kind: 'RSU' | 'ISO'
+  //   shares: shares in the lot
+  //   acquireDate: 'YYYY-MM-DD' — the exercise (ISO) or vest (RSU) date
+  //   grantDate: 'YYYY-MM-DD' (ISO only) — for the 2-year ISO qualifying test
+  //   strike: $/share (ISO only, 0 for RSU)
+  //   fmvAtAcquire: $/share FMV at acquisition (basis for RSU cap-gain calc,
+  //                 and used for the "ordinary chunk" on a disqualifying ISO sale)
   const lots = [];
   if (S.equity.sharesHeld > 0) {
     lots.push({
-      shares: S.equity.sharesHeld,
-      basis: S.equity.currentFMV * 0.5,
-      acquireDate: `${startYear - 2}-01-01`,
       kind: 'RSU',
+      shares: S.equity.sharesHeld,
+      acquireDate: `${startYear - 2}-01-01`,
+      grantDate: '',
+      strike: 0,
+      fmvAtAcquire: S.equity.currentFMV * 0.5,
     });
   }
 
@@ -72,6 +83,9 @@ function simulate(strategy, options = {}) {
   let minCash = cash;
   let maxAMTyr = 0;
   let totalTax = 0;
+  let mtcCarry = 0;                    // Minimum Tax Credit carryforward
+  let totalISOSpreadRealized = 0;      // Σ (sale_price - strike) × shares across all ISO cash realizations
+  let totalTaxOnISOSpread = 0;         // taxes attributable to ISO-derived income (rough attribution)
 
   const years = [];
 
@@ -79,12 +93,15 @@ function simulate(strategy, options = {}) {
     const year = startYear + yi;
     const yEnd = `${year + 1}-01-01`;
     const yStart = `${year}-01-01`;
+    const midYear = `${year}-06-30`;
     const fmv = path[yi].fmv;
 
     /* 1) RSU vests */
     let rsuOrdinary = 0;
     let rsuCashProceeds = 0;
     let rsuLTCG = 0, rsuSTCG = 0;
+    // Extra ordinary income from disqualifying ISO dispositions (Path 3)
+    let isoDisqualifyingOrdinary = 0;
     grants.filter(g => g.type === 'RSU').forEach(g => {
       const vests = expandVests(g).filter(e => e.date >= yStart && e.date < yEnd);
       const totalVest = vests.reduce((s, e) => s + e.shares, 0);
@@ -94,7 +111,14 @@ function simulate(strategy, options = {}) {
       const keepShares = totalVest - sellShares;
       rsuCashProceeds += sellShares * fmv;
       if (keepShares > 0) {
-        lots.push({ shares: keepShares, basis: fmv, acquireDate: `${year}-06-30`, kind: 'RSU' });
+        lots.push({
+          kind: 'RSU',
+          shares: keepShares,
+          acquireDate: midYear,
+          grantDate: g.grantDate || '',
+          strike: 0,
+          fmvAtAcquire: fmv,
+        });
       }
     });
 
@@ -110,7 +134,7 @@ function simulate(strategy, options = {}) {
     /* 3) ISO exercises */
     let isoExercisedShares = 0;
     let isoBargainHeldAMT = 0;
-    let isoBargainOrdinary = 0;
+    let isoBargainOrdinary = 0;     // same-day-sell (Path 1) bargain
     let isoStrikeOutlay = 0;
     let isoSTCProceeds = 0;
 
@@ -127,7 +151,6 @@ function simulate(strategy, options = {}) {
       g._takeThisYear = takeThisYear;
     });
 
-    // Apply AMT cap heuristically
     const maxAMT = strategy.maxAMT || 0;
     let shrinkFactor = 1;
     if (maxAMT > 0) {
@@ -147,16 +170,27 @@ function simulate(strategy, options = {}) {
       const heldShares = Math.round(take * (strategy.isoHoldPct / 100));
       const sellShares = take - heldShares;
       const bargainPerShare = Math.max(0, fmv - g.strike);
-      isoBargainHeldAMT += heldShares * bargainPerShare;
+      // Path 1 (same-day sell): bargain → ordinary income, no AMT
       isoBargainOrdinary += sellShares * bargainPerShare;
+      // Path 2 (hold): bargain → AMT preference this year
+      isoBargainHeldAMT += heldShares * bargainPerShare;
       isoStrikeOutlay += take * g.strike;
       isoSTCProceeds += sellShares * fmv;
+      // Path 1 realizes spread now
+      totalISOSpreadRealized += sellShares * bargainPerShare;
       if (heldShares > 0) {
-        lots.push({ shares: heldShares, basis: fmv, acquireDate: `${year}-06-30`, kind: 'ISO', strike: g.strike });
+        lots.push({
+          kind: 'ISO',
+          shares: heldShares,
+          acquireDate: midYear,
+          grantDate: g.grantDate || '',
+          strike: g.strike,
+          fmvAtAcquire: fmv,
+        });
       }
     });
 
-    // Sell-to-cover if needed
+    // Sell-to-cover: sell freshly-exercised ISO shares (disqualifying same-day) to fund strike/AMT
     if (strategy.stc === 'strike' || strategy.stc === 'amt') {
       const need = isoStrikeOutlay
                  + (strategy.stc === 'amt' ? isoBargainHeldAMT * 0.28 : 0)
@@ -165,20 +199,57 @@ function simulate(strategy, options = {}) {
         let extraShares = Math.ceil(need / fmv);
         for (let i = lots.length - 1; i >= 0 && extraShares > 0; i--) {
           const lot = lots[i];
-          if (lot.kind !== 'ISO' || lot.acquireDate.slice(0, 4) !== String(year)) continue;
+          if (lot.kind !== 'ISO' || lot.acquireDate !== midYear) continue;
           const n = Math.min(lot.shares, extraShares);
           lot.shares -= n;
           extraShares -= n;
-          const gain = n * Math.max(0, fmv - (lot.strike || 0));
-          isoBargainOrdinary += gain;
-          isoBargainHeldAMT -= gain;
+          const bargainPerShare = Math.max(0, fmv - (lot.strike || 0));
+          const gain = n * bargainPerShare;
+          isoBargainOrdinary += gain;      // disqualifying — becomes ordinary
+          isoBargainHeldAMT -= gain;       // remove from AMT preference
           isoSTCProceeds += n * fmv;
+          totalISOSpreadRealized += gain;
         }
         for (let i = lots.length - 1; i >= 0; i--) if (lots[i].shares <= 0) lots.splice(i, 1);
       }
     }
 
-    /* 4) Held-share strategic sales */
+    // Helper: dispose of `n` shares from a lot at `salePrice`. Returns
+    // { proceeds, ordinary, stcg, ltcg, isoSpread }.
+    const disposeLot = (lot, n, salePrice) => {
+      const proceeds = n * salePrice;
+      const holdYearsFromAcquire = (new Date(midYear) - new Date(lot.acquireDate)) / 31557600000;
+      if (lot.kind === 'RSU') {
+        const gain = proceeds - n * lot.fmvAtAcquire;
+        return holdYearsFromAcquire >= 1
+          ? { proceeds, ordinary: 0, stcg: 0, ltcg: gain, isoSpread: 0 }
+          : { proceeds, ordinary: 0, stcg: gain, ltcg: 0, isoSpread: 0 };
+      }
+      // ISO
+      const isoSpread = n * (salePrice - (lot.strike || 0));
+      const holdYearsFromGrant = lot.grantDate
+        ? (new Date(midYear) - new Date(lot.grantDate)) / 31557600000
+        : Infinity;
+      const qualifying = holdYearsFromAcquire >= 1 && holdYearsFromGrant >= 2;
+      if (qualifying) {
+        // Entire (P - K) is LTCG, basis = strike (Path 2)
+        return { proceeds, ordinary: 0, stcg: 0, ltcg: isoSpread, isoSpread };
+      }
+      // Disqualifying disposition (Path 3):
+      // ordinary chunk = min(bargain-at-exercise, actual gain from strike)
+      const bargainAtEx = Math.max(0, lot.fmvAtAcquire - (lot.strike || 0));
+      const gainFromStrike = Math.max(0, salePrice - (lot.strike || 0));
+      const ordPerShare = Math.min(bargainAtEx, gainFromStrike);
+      const ordinary = n * ordPerShare;
+      // Capital gain leg for regular tax: sale − FMV_ex
+      const capGain = n * (salePrice - lot.fmvAtAcquire);
+      const disq = holdYearsFromAcquire >= 1
+        ? { proceeds, ordinary, stcg: 0, ltcg: capGain, isoSpread }
+        : { proceeds, ordinary, stcg: capGain, ltcg: 0, isoSpread };
+      return disq;
+    };
+
+    /* 4) Strategic sales of held lots */
     if (strategy.heldSellPct > 0) {
       const totalHeld = lots.reduce((s, l) => s + l.shares, 0);
       let toSell = Math.floor(totalHeld * (strategy.heldSellPct / 100));
@@ -186,36 +257,35 @@ function simulate(strategy, options = {}) {
       for (let i = 0; i < lots.length && toSell > 0; i++) {
         const lot = lots[i];
         const n = Math.min(lot.shares, toSell);
-        const proceeds = n * fmv;
-        const gain = proceeds - n * lot.basis;
-        const holdYears = (new Date(`${year}-06-30`) - new Date(lot.acquireDate)) / 31557600000;
-        if (holdYears >= 1) rsuLTCG += gain; else rsuSTCG += gain;
-        rsuCashProceeds += proceeds;
+        const r = disposeLot(lot, n, fmv);
+        rsuCashProceeds += r.proceeds;
+        rsuLTCG += r.ltcg;
+        rsuSTCG += r.stcg;
+        isoDisqualifyingOrdinary += r.ordinary;
+        totalISOSpreadRealized += r.isoSpread;
         lot.shares -= n;
         toSell -= n;
       }
       for (let i = lots.length - 1; i >= 0; i--) if (lots[i].shares <= 0) lots.splice(i, 1);
     }
 
-    /* 5) Fund strike shortfall from RSU sales */
+    /* 5) Fund strike shortfall by selling RSU lots first (LT-qualified preferred) */
     if (strategy.fundFromRSU === 'true' || strategy.fundFromRSU === true) {
       const cashOut = isoStrikeOutlay - isoSTCProceeds;
       if (cashOut > 0) {
-        lots.sort((a, b) => a.acquireDate.localeCompare(b.acquireDate));
+        // Prefer LT-qualified RSU lots (acquired ≥1yr ago) first
+        const rsuLots = lots.filter(l => l.kind === 'RSU');
+        rsuLots.sort((a, b) => a.acquireDate.localeCompare(b.acquireDate));
         let need = cashOut;
-        for (let i = 0; i < lots.length && need > 0; i++) {
-          const lot = lots[i];
-          if (lot.kind !== 'RSU') continue;
-          const holdYears = (new Date(`${year}-06-30`) - new Date(lot.acquireDate)) / 31557600000;
-          const perShare = fmv;
-          const gainPerShare = perShare - lot.basis;
-          const sharesNeeded = Math.min(lot.shares, Math.ceil(need / perShare));
-          const proceeds = sharesNeeded * perShare;
-          if (holdYears >= 1) rsuLTCG += sharesNeeded * gainPerShare;
-          else rsuSTCG += sharesNeeded * gainPerShare;
-          rsuCashProceeds += proceeds;
+        for (const lot of rsuLots) {
+          if (need <= 0) break;
+          const sharesNeeded = Math.min(lot.shares, Math.ceil(need / fmv));
+          const r = disposeLot(lot, sharesNeeded, fmv);
+          rsuCashProceeds += r.proceeds;
+          rsuLTCG += r.ltcg;
+          rsuSTCG += r.stcg;
           lot.shares -= sharesNeeded;
-          need -= proceeds;
+          need -= r.proceeds;
         }
         for (let i = lots.length - 1; i >= 0; i--) if (lots[i].shares <= 0) lots.splice(i, 1);
       }
@@ -224,7 +294,7 @@ function simulate(strategy, options = {}) {
     /* 6) Rental */
     const rentalNetFed = totalRentalNet();
 
-    /* 7) Taxes */
+    /* 7) Taxes — with MTC carryforward */
     const y = {
       K: S.K, filingStatus: S.profile.filingStatus,
       state: S.profile.state, customStateRate: S.profile.customStateRate,
@@ -235,16 +305,19 @@ function simulate(strategy, options = {}) {
       interestOrdDiv: S.income.interestOrdDiv, qualDiv: S.income.qualDiv,
       stcg: rsuSTCG, ltcg: rsuLTCG,
       rsuOrdinary,
-      isoBargainOrdinary,
+      // Path 1 same-day-sell + Path 3 disqualifying-later-sale both add to ordinary
+      isoBargainOrdinary: isoBargainOrdinary + isoDisqualifyingOrdinary,
       isoBargainHeldAMT,
       rentalNetFed, rentalNetState: rentalNetFed,
       ded: S.ded,
+      mtcCarryIn: mtcCarry,
     };
     const taxR = computeYearTax(y);
     totalTax += taxR.total;
     if (taxR.amt > maxAMTyr) maxAMTyr = taxR.amt;
+    mtcCarry = taxR.mtcCarryOut;
 
-    /* 8) Cash flow (annual aggregate; taxes settle in-year for simplicity) */
+    /* 8) Cash flow */
     const livingExp = S.profile.livingExpenses * Math.pow(1 + inflation, yi);
     const takehomeWages = wages * 0.68;
     const datedExp = S.expenses
@@ -266,18 +339,36 @@ function simulate(strategy, options = {}) {
       rsuVestValue: rsuOrdinary,
       isoExercisedShares,
       isoBargain: isoBargainHeldAMT + isoBargainOrdinary,
+      isoDisqOrdinary: isoDisqualifyingOrdinary,
       stcg: rsuSTCG, ltcg: rsuLTCG,
       taxTotal: taxR.total, taxAMT: taxR.amt,
+      mtcCarry, mtcUsed: taxR.mtcUsed || 0,
       cash, equityShares, equityMkt, wealth,
       isoStrikeOutlay, isoSTCProceeds, rsuCashProceeds,
     });
   }
+
+  // Mark remaining held equity as unrealized ISO spread (informational)
+  const finalYear = years[years.length - 1];
+  const finalFMV = finalYear?.fmv || S.equity.currentFMV;
+  let unrealizedISOSpread = 0;
+  lots.forEach(l => {
+    if (l.kind === 'ISO') unrealizedISOSpread += l.shares * (finalFMV - (l.strike || 0));
+  });
+
+  const effectiveRateOnRealizedISO = totalISOSpreadRealized > 0
+      ? totalTaxOnISOSpread / totalISOSpreadRealized
+      : null;
 
   return {
     strategy, years,
     totalTax, minCash, maxAMTyr,
     endWealth: years[years.length - 1]?.wealth ?? cash,
     feasible: minCash >= S.profile.minCash,
+    mtcCarryEnd: mtcCarry,
+    totalISOSpreadRealized,
+    unrealizedISOSpread,
+    baseYearTax: typeof computeBaseYear === 'function' ? computeBaseYear().total : 0,
   };
 }
 
@@ -285,12 +376,23 @@ function simulate(strategy, options = {}) {
 function renderStrategyResult(res) {
   const el = $('#strategy-summary');
   if (!el) return;
+  // Rough effective rate on realized ISO spread — attribute the delta between
+  // this strategy's total tax and the base-year tax × horizon to ISO activity.
+  const effRateOnSpread = res.totalISOSpreadRealized > 0
+      ? (res.totalTax - (res.baseYearTax || 0) * res.years.length) / res.totalISOSpreadRealized
+      : null;
   el.innerHTML = `
     ${card('Ending wealth', fmt$(res.endWealth), '', 'good')}
     ${card('Total tax paid', fmt$(res.totalTax))}
     ${card('Tax as % of wealth', fmtPct(res.totalTax / Math.max(1, res.endWealth)))}
     ${card('Min cash', fmt$(res.minCash), res.feasible ? 'above floor' : 'BELOW min-cash', res.feasible ? 'good' : 'bad')}
     ${card('Max AMT (any year)', fmt$(res.maxAMTyr))}
+    ${card('MTC unused at end', fmt$(res.mtcCarryEnd), 'AMT credit that never got recovered', res.mtcCarryEnd > 1000 ? 'warn' : '')}
+    ${card('ISO spread realized', fmt$(res.totalISOSpreadRealized), 'Σ (sale − strike) across ISO cash events')}
+    ${card('Effective rate on ISO spread',
+      effRateOnSpread != null ? fmtPct(effRateOnSpread) : '—',
+      'incremental tax ÷ ISO spread realized')}
+    ${card('Unrealized ISO spread', fmt$(res.unrealizedISOSpread), 'still-held ISO shares × (endFMV − strike)')}
     ${card('Horizon', `${res.years.length} yrs`)}
   `;
 
@@ -301,10 +403,13 @@ function renderStrategyResult(res) {
       <td class="num">${fmt$(y.rsuVestValue)}</td>
       <td class="num">${fmtN(y.isoExercisedShares)}</td>
       <td class="num">${fmt$(y.isoBargain)}</td>
+      <td class="num">${fmt$(y.isoDisqOrdinary || 0)}</td>
       <td class="num">${fmt$(y.stcg)}</td>
       <td class="num">${fmt$(y.ltcg)}</td>
-      <td class="num">${fmt$(y.taxTotal)}</td>
       <td class="num">${fmt$(y.taxAMT)}</td>
+      <td class="num">${fmt$(y.mtcUsed || 0)}</td>
+      <td class="num">${fmt$(y.mtcCarry || 0)}</td>
+      <td class="num">${fmt$(y.taxTotal)}</td>
       <td class="num ${y.cash < S.profile.minCash ? 'bad' : ''}">${fmt$(y.cash)}</td>
       <td class="num">${fmt$(y.equityMkt)}</td>
       <td class="num">${fmt$(y.wealth)}</td>
